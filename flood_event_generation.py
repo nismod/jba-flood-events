@@ -1,3 +1,20 @@
+"""Calculate flood event exposure
+
+Inputs
+------
+- River observation points (fluvial flooding)
+- Precipitation observation points (surface water flooding)
+- Hazard accumulation zones
+- Simulated event return periods at observation points
+- Return period flood maps
+- Exposure points (these are user defined - here we pick a point in each cell of the return period
+  flood maps which has any exposure across all return periods)
+
+Outputs
+-------
+- Flood depth at each exposure point, for each event
+
+"""
 import numpy as np
 import pandas as pd
 import geopandas as gpd
