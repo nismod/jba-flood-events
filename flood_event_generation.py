@@ -1,61 +1,8 @@
 import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
 import geopandas as gpd
-from datetime import datetime
 import rioxarray
-import networkx as nx
-from shapely import wkt
-from functools import partial
-import pyproj
-from shapely.ops import transform
 from shapely.geometry import Point
-from convertbng.util import convert_bng, convert_lonlat
-from sklearn import datasets, linear_model
-from sklearn.model_selection import train_test_split
-import snkit
-from scipy.interpolate import griddata
-from scipy.stats import genextreme as gev
-
-#%matplotlib inline
-from geopandas import GeoDataFrame
-from shapely.geometry import Point
-from copulas.multivariate import GaussianMultivariate
-
-# from copulas.bivariate import Bivariate
-# from copulas.bivariate import Clayton
-# from copulas.bivariate import Gumbel
-# from copulas.bivariate import Frank
-# from copulas.multivariate import VineCopula
-from scipy.interpolate import interp1d
-
-# from copulas.visualization import hist_1d, side_by_side, scatter_3d
-import statsmodels.distributions.empirical_distribution as edf
-import seaborn as sns
-
-# from copulalib.copulalib import Copula
-from scipy.stats import genextreme as gev
-from pathos.multiprocessing import ProcessPool, cpu_count
-import statsmodels.api as sm
-import shapely
-from shapely.ops import nearest_points
-import multiprocessing as mp
-import geopandas as gpd
-from shapely.ops import split, snap
-from shapely.ops import nearest_points
-from shapely.geometry import Point
-from shapely.geometry import LineString
-from shapely.geometry import LineString, shape
-import statsmodels.api as sm
-import numpy as np
-import pandas as pd
-import statsmodels.api as sm
-from statsmodels.sandbox.regression.predstd import wls_prediction_std
-from matplotlib.lines import Line2D
-from scipy.interpolate import Rbf
-from scipy.spatial import Voronoi, voronoi_plot_2d
-from scipy.spatial import ConvexHull, convex_hull_plot_2d
-import itertools
 from scipy.stats.mstats import gmean
 
 JM_HAZ_T500_02 = gpd.read_file("event_points_hydrological_units/JM_HAZ_T500_02.shp")
@@ -63,7 +10,7 @@ PrcipOPInfo = pd.read_csv("event_data/PrcipOPInfo.csv")
 RiverOPInfo = pd.read_csv("event_data/RiverOPInfo.csv")
 SimEventRP = pd.read_csv("event_data/SimEventRP.csv")
 
-# # fluvial events event obs points intersect with hydrological units
+# fluvial events event obs points intersect with hydrological units
 geometry = [
     Point(xy) for xy in zip(RiverOPInfo["op.lon"].values, RiverOPInfo["op.lat"].values)
 ]
@@ -72,7 +19,7 @@ RiverOPInfo_gdf_intersection = gpd.overlay(
     RiverOPInfo_gdf, JM_HAZ_T500_02, how="intersection"
 )
 
-# # fluvial events subset and get geometric_mean_rp per hydrological unit
+# fluvial events subset and get geometric_mean_rp per hydrological unit
 fluvial_events = pd.merge(
     SimEventRP,
     RiverOPInfo_gdf_intersection[["op.id", "op.lon", "op.lat", "T500_ID"]],
@@ -89,7 +36,7 @@ fluvial_events_intersection_gm["geometric_mean_rp"] = fluvial_events_intersectio
     "rp"
 ].apply(gmean)
 
-# # interpolation bounds per event
+# interpolation bounds per event
 fluvial_events_intersection_gm["interpolate_between_min_event"] = np.where(
     fluvial_events_intersection_gm["geometric_mean_rp"] <= 20,
     2,
@@ -151,7 +98,7 @@ fluvial_events_intersection_gm["interpolate_between_max_event"] = np.where(
     ),
 )
 
-# # fluvial flood maps grid intersect with hydrological units
+# fluvial flood maps grid intersect with hydrological units
 # JM_FLRF = rioxarray.open_rasterio('fluvial_raw_fld_depth/JM_FLRF_UD_Q20_RD_02.tif')
 # JM_FLRF = JM_FLRF.to_dataframe('results').reset_index()
 # JM_FLRF = JM_FLRF[JM_FLRF['results']>0]
@@ -163,7 +110,7 @@ JM_FLRF_gdf_intersection = pd.read_csv("JM_FLRF_gdf_intersection.csv")[
     ["y", "x", "T500_ID", "T500_Type", "T1000_ID", "T1000_Type"]
 ]
 
-# # join fluvial flood maps
+# join fluvial flood maps
 for i in ["20", "50", "100", "200", "500", "1500"]:
     JM_FLRF = rioxarray.open_rasterio(
         "fluvial_raw_fld_depth/JM_FLRF_UD_Q" + i + "_RD_02.tif"
@@ -175,13 +122,13 @@ for i in ["20", "50", "100", "200", "500", "1500"]:
         JM_FLRF_gdf_intersection, JM_FLRF[["x", "y", i]], on=["x", "y"]
     )
 
-# # assume flood depth == 0 @ rp 2
+# assume flood depth == 0 @ rp 2
 JM_FLRF_gdf_intersection["2"] = [0] * JM_FLRF_gdf_intersection.shape[0]
 # JM_FLRF_gdf_intersection.to_csv('JM_FLRF_gdf_intersection_2.csv')
 # JM_FLRF_gdf_intersection = pd.read_csv('JM_FLRF_gdf_intersection_2.csv')
 
-# # merge events to the grid based on hydrological unit
-# # apply log relationship between flood depths to events in event dataset
+# merge events to the grid based on hydrological unit
+# apply log relationship between flood depths to events in event dataset
 for event in (
     fluvial_events_intersection_gm["event.id"].drop_duplicates().to_list()[1:5]
 ):
@@ -223,9 +170,7 @@ for event in (
     # df3.plot()
     # plt.savefig(str(event)+'.tiff')
 
-print(oliv)
-
-# # pluvial event obs points split using voronoi diagrames
+# pluvial event obs points split using voronoi diagrames
 geometry = [
     Point(xy) for xy in zip(PrcipOPInfo["op.lon"].values, PrcipOPInfo["op.lat"].values)
 ]
@@ -235,6 +180,7 @@ PrcipOPInfo_gdf = gpd.GeoDataFrame(PrcipOPInfo, crs="EPSG:4326", geometry=geomet
 # for it, rows in PrcipOPInfo.reset_index().iterrows():
 # my_list =[rows['op.lon'], rows['op.lat']]
 # points.append(my_list)
+# from scipy.spatial import Voronoi
 # vor = Voronoi(points)
 # lines = [shapely.geometry.LineString(vor.vertices[line]) for line in vor.ridge_vertices if -1 not in line]
 # polys = shapely.ops.polygonize(lines)
@@ -254,7 +200,7 @@ PrcipOPInfo_gdf_intersection = gpd.GeoDataFrame(
     geometry=PrcipOPInfo_gdf_intersection["geometry_y"],
 )
 
-# # apportion pluvial flood map grid into the voronoi polygon assigned to each pluvial event obs point
+# apportion pluvial flood map grid into the voronoi polygon assigned to each pluvial event obs point
 surface_water_events = pd.merge(
     SimEventRP,
     PrcipOPInfo_gdf_intersection[["op.id", "op.lon", "op.lat"]],
@@ -262,7 +208,7 @@ surface_water_events = pd.merge(
     how="left",
 )  ## get only river obs points
 
-# # interpolation bounds per event
+# interpolation bounds per event
 surface_water_events["interpolate_between_min_event"] = np.where(
     surface_water_events["geometric_mean_rp"] <= 20,
     2,
@@ -333,7 +279,7 @@ surface_water_events["interpolate_between_max_event"] = np.where(
 # JM_FLRF_gdf_intersection.to_csv('JM_FLRF_gdf_intersection_SW.csv')
 JM_FLRF_gdf_intersection_SW = pd.read_csv("JM_FLRF_gdf_intersection_SW.csv")
 
-# # join surface water flood maps
+# join surface water flood maps
 for i in ["20", "50", "100", "200", "500", "1500"]:
     JM_FLSW = rioxarray.open_rasterio(
         "surface_water_raw_fld_depth/JM_FLSW_UD_Q" + i + "_RD_02.tif"
@@ -346,13 +292,13 @@ for i in ["20", "50", "100", "200", "500", "1500"]:
         JM_FLRF_gdf_intersection_SW, JM_FLSW[["x", "y", i]], on=["x", "y"]
     )
 
-# # assume flood depth == 0 @ rp 2
+# assume flood depth == 0 @ rp 2
 JM_FLSW_gdf_intersection_SW["2"] = [0] * JM_FLSW_gdf_intersection_SW.shape[0]
 # JM_FLSW_gdf_intersection_SW.to_csv('JM_FLSW_gdf_intersection_SW_2.csv')
 # JM_FLSW_gdf_intersection_SW = pd.read_csv('JM_FLSW_gdf_intersection_SW_2.csv')
 
-# # merge events to the grid based on hydrological unit
-# # apply log relationship between flood depths to events in event dataset
+# merge events to the grid based on hydrological unit
+# apply log relationship between flood depths to events in event dataset
 for event in surface_water_events["event.id"].drop_duplicates().to_list()[1:5]:
     iter_df = surface_water_events[surface_water_events["event.id"] == event]
     merge = pd.merge(
