@@ -109,14 +109,14 @@ JM_FLRF_gdf_intersection['2'] = [0]*JM_FLRF_gdf_intersection.shape[0]
 # # merge events to the grid based on hydrological unit 
 # # apply log relationship between flood depths to events in event dataset
 for event in fluvial_events_intersection_gm['event.id'].drop_duplicates().to_list()[1:5]:
-    iter = fluvial_events_intersection_gm[fluvial_events_intersection_gm['event.id']==event] 
-    merge = pd.merge(JM_FLRF_gdf_intersection, iter[['event.id','T500_ID','geometric_mean_rp']], on='T500_ID', how='left')     
+    iter_df = fluvial_events_intersection_gm[fluvial_events_intersection_gm['event.id']==event] 
+    merge = pd.merge(JM_FLRF_gdf_intersection, iter_df[['event.id','T500_ID','geometric_mean_rp']], on='T500_ID', how='left')     
     
-    merge['event'] = [iter['geometric_mean_rp'].values[0]]*merge.shape[0]
-    merge['min_event'] = [iter['interpolate_between_min_event'].values[0]]*merge.shape[0]
-    merge['max_event'] = [iter['interpolate_between_max_event'].values[0]]*merge.shape[0]   
-    merge['min_depth'] = merge[[iter['interpolate_between_min_event'].values[0]]]
-    merge['max_depth'] = merge[[iter['interpolate_between_max_event'].values[0]]]
+    merge['event'] = [iter_df['geometric_mean_rp'].values[0]]*merge.shape[0]
+    merge['min_event'] = [iter_df['interpolate_between_min_event'].values[0]]*merge.shape[0]
+    merge['max_event'] = [iter_df['interpolate_between_max_event'].values[0]]*merge.shape[0]   
+    merge['min_depth'] = merge[[iter_df['interpolate_between_min_event'].values[0]]]
+    merge['max_depth'] = merge[[iter_df['interpolate_between_max_event'].values[0]]]
     merge['extrapolated_depth'] = merge.apply(lambda row: 1 +(np.log(int(row.event))-np.log(int(row.min_event)))/(np.log(int(row.max_event))-np.log(int(row.min_event)))*(int(row.max_depth)-int(row.min_depth)), axis=1)
     print(merge['extrapolated_depth'])
     
@@ -194,14 +194,14 @@ JM_FLSW_gdf_intersection_SW['2'] = [0]*JM_FLSW_gdf_intersection_SW.shape[0]
 # # merge events to the grid based on hydrological unit 
 # # apply log relationship between flood depths to events in event dataset
 for event in surface_water_events['event.id'].drop_duplicates().to_list()[1:5]:
-    iter = surface_water_events[surface_water_events['event.id']==event] 
-    merge = pd.merge(JM_FLSW_gdf_intersection_SW, , iter[['event.id','op.id','rp']], on='op.id', how='left')      
+    iter_df = surface_water_events[surface_water_events['event.id']==event] 
+    merge = pd.merge(JM_FLSW_gdf_intersection_SW, , iter_df[['event.id','op.id','rp']], on='op.id', how='left')      
     
-    merge['event'] = [iter['rp'].values[0]]*merge.shape[0]
-    merge['min_event'] = [iter['interpolate_between_min_event'].values[0]]*merge.shape[0]
-    merge['max_event'] = [iter['interpolate_between_max_event'].values[0]]*merge.shape[0]   
-    merge['min_depth'] = merge[[iter['interpolate_between_min_event'].values[0]]]
-    merge['max_depth'] = merge[[iter['interpolate_between_max_event'].values[0]]]
+    merge['event'] = [iter_df['rp'].values[0]]*merge.shape[0]
+    merge['min_event'] = [iter_df['interpolate_between_min_event'].values[0]]*merge.shape[0]
+    merge['max_event'] = [iter_df['interpolate_between_max_event'].values[0]]*merge.shape[0]   
+    merge['min_depth'] = merge[[iter_df['interpolate_between_min_event'].values[0]]]
+    merge['max_depth'] = merge[[iter_df['interpolate_between_max_event'].values[0]]]
     merge['extrapolated_depth'] = merge.apply(lambda row: 1 +(np.log(int(row.event))-np.log(int(row.min_event)))/(np.log(int(row.max_event))-np.log(int(row.min_event)))*(int(row.max_depth)-int(row.min_depth)), axis=1)
     print(merge['extrapolated_depth'])
     
