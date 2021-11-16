@@ -18,8 +18,8 @@ Outputs
 import numpy as np
 import pandas as pd
 import geopandas as gpd
+import pygeos.creation
 import rioxarray
-from shapely.geometry import Point
 from scipy.stats.mstats import gmean
 
 JM_HAZ_T500_02 = gpd.read_file("event_points_hydrological_units/JM_HAZ_T500_02.shp")
@@ -28,9 +28,7 @@ RiverOPInfo = pd.read_csv("event_data/RiverOPInfo.csv")
 SimEventRP = pd.read_csv("event_data/SimEventRP.csv")
 
 # fluvial events event obs points intersect with hydrological units
-geometry = [
-    Point(xy) for xy in zip(RiverOPInfo["op.lon"].values, RiverOPInfo["op.lat"].values)
-]
+geometry = pygeos.creation.points(RiverOPInfo["op.lon"].values, RiverOPInfo["op.lat"].values)
 RiverOPInfo_gdf = gpd.GeoDataFrame(RiverOPInfo, crs="EPSG:4326", geometry=geometry)
 RiverOPInfo_gdf_intersection = gpd.overlay(
     RiverOPInfo_gdf, JM_HAZ_T500_02, how="intersection"
@@ -116,16 +114,17 @@ fluvial_events_intersection_gm["interpolate_between_max_event"] = np.where(
 )
 
 # fluvial flood maps grid intersect with hydrological units
-# JM_FLRF = rioxarray.open_rasterio('fluvial_raw_fld_depth/JM_FLRF_UD_Q20_RD_02.tif')
-# JM_FLRF = JM_FLRF.to_dataframe('results').reset_index()
-# JM_FLRF = JM_FLRF[JM_FLRF['results']>0]
-# geometry = [Point(xy) for xy in zip(JM_FLRF['x'].values, JM_FLRF['y'].values)]
-# JM_FLRF_gdf = gpd.GeoDataFrame(JM_FLRF,crs="EPSG:4326",geometry=geometry)
-# JM_FLRF_gdf_intersection = gpd.overlay(JM_FLRF_gdf,JM_HAZ_T500_02,how='intersection')
-# JM_FLRF_gdf_intersection.to_csv('JM_FLRF_gdf_intersection.csv')
-JM_FLRF_gdf_intersection = pd.read_csv("JM_FLRF_gdf_intersection.csv")[
-    ["y", "x", "T500_ID", "T500_Type", "T1000_ID", "T1000_Type"]
-]
+if os.path.exists("JM_FLRF_gdf_intersection.csv"):
+    JM_FLRF_gdf_intersection = pd.read_csv("JM_FLRF_gdf_intersection.csv", index=False)
+else:
+    JM_FLRF = rioxarray.open_rasterio('fluvial_raw_fld_depth/JM_FLRF_UD_Q20_RD_02.tif')  # should this be Q1500 for greatest extent?
+    JM_FLRF = JM_FLRF.to_dataframe('results').reset_index()
+    JM_FLRF = JM_FLRF[JM_FLRF['results']>0]
+    geometry = pygeos.creation.points(JM_FLRF.x, JM_FLRF.y)
+    JM_FLRF_gdf = gpd.GeoDataFrame(JM_FLRF,crs="EPSG:4326",geometry=geometry)
+    JM_FLRF_gdf_intersection = JM_FLRF_gdf.sjoin(JM_HAZ_T500_02, predicate='within', how='left')
+    JM_FLRF_gdf_intersection = JM_FLRF_gdf_intersection[["y", "x", "T500_ID", "T500_Type", "T1000_ID", "T1000_Type"]]
+    JM_FLRF_gdf_intersection.to_csv('JM_FLRF_gdf_intersection.csv')
 
 # join fluvial flood maps
 for i in ["20", "50", "100", "200", "500", "1500"]:
@@ -187,40 +186,14 @@ for event in (
     # df3.plot()
     # plt.savefig(str(event)+'.tiff')
 
-# pluvial event obs points split using voronoi diagrames
-geometry = [
-    Point(xy) for xy in zip(PrcipOPInfo["op.lon"].values, PrcipOPInfo["op.lat"].values)
-]
+# pluvial event obs points split using nearest neighbour
+geometry = pygeos.creation.points(PrcipOPInfo["op.lon"], PrcipOPInfo["op.lat"])
 PrcipOPInfo_gdf = gpd.GeoDataFrame(PrcipOPInfo, crs="EPSG:4326", geometry=geometry)
 
-# points = []
-# for it, rows in PrcipOPInfo.reset_index().iterrows():
-# my_list =[rows['op.lon'], rows['op.lat']]
-# points.append(my_list)
-# from scipy.spatial import Voronoi
-# vor = Voronoi(points)
-# lines = [shapely.geometry.LineString(vor.vertices[line]) for line in vor.ridge_vertices if -1 not in line]
-# polys = shapely.ops.polygonize(lines)
-# voronoi_precip = gpd.GeoDataFrame(crs="EPSG:4326",geometry=gpd.GeoSeries(polys))
-# voronoi_precip.to_file('voronoi_precip.shp')
-voronoi_precip = gpd.read_file("voronoi_precip.shp")
-
-PrcipOPInfo_gdf_intersection = gpd.overlay(
-    PrcipOPInfo_gdf, voronoi_precip, how="intersection", keep_geom_type=False
-)
-PrcipOPInfo_gdf_intersection = PrcipOPInfo_gdf_intersection.merge(
-    voronoi_precip, on="FID"
-)
-PrcipOPInfo_gdf_intersection = gpd.GeoDataFrame(
-    PrcipOPInfo_gdf_intersection,
-    crs="EPSG:4326",
-    geometry=PrcipOPInfo_gdf_intersection["geometry_y"],
-)
-
-# apportion pluvial flood map grid into the voronoi polygon assigned to each pluvial event obs point
+# link surface water events to observation points
 surface_water_events = pd.merge(
     SimEventRP,
-    PrcipOPInfo_gdf_intersection[["op.id", "op.lon", "op.lat"]],
+    PrcipOPInfo_gdf[["op.id", "op.lon", "op.lat"]],
     on="op.id",
     how="left",
 )  ## get only river obs points
@@ -287,14 +260,16 @@ surface_water_events["interpolate_between_max_event"] = np.where(
     ),
 )
 
-# JM_FLRF = rioxarray.open_rasterio('surface_water_raw_fld_depth/JM_FLSW_UD_Q20_RD_02.tif')
-# JM_FLRF = JM_FLRF.to_dataframe('results').reset_index()
-# JM_FLRF = JM_FLRF[JM_FLRF['results']>0]
-# geometry = [Point(xy) for xy in zip(JM_FLRF['x'].values, JM_FLRF['y'].values)]
-# JM_FLRF_gdf = gpd.GeoDataFrame(JM_FLRF,crs="EPSG:4326",geometry=geometry)
-# JM_FLRF_gdf_intersection = gpd.overlay(JM_FLRF_gdf,PrcipOPInfo_gdf_intersection,how='intersection')
-# JM_FLRF_gdf_intersection.to_csv('JM_FLRF_gdf_intersection_SW.csv')
-JM_FLRF_gdf_intersection_SW = pd.read_csv("JM_FLRF_gdf_intersection_SW.csv")
+if os.path.exists("JM_FLRF_gdf_intersection_SW.csv"):
+    JM_FLRF_gdf_intersection_SW = pd.read_csv("JM_FLRF_gdf_intersection_SW.csv")
+else:
+    JM_FLRF = rioxarray.open_rasterio('surface_water_raw_fld_depth/JM_FLSW_UD_Q20_RD_02.tif')
+    JM_FLRF = JM_FLRF.to_dataframe('results').reset_index()
+    JM_FLRF = JM_FLRF[JM_FLRF['results']>0]
+    geometry = pygeos.creation.points(JM_FLRF['x'], JM_FLRF['y'])
+    JM_FLRF_gdf = gpd.GeoDataFrame(JM_FLRF,crs="EPSG:4326",geometry=geometry)
+    JM_FLRF_gdf_intersection = JM_FLRF_gdf.sjoin_nearest(PrcipOPInfo_gdf, how='left')
+    JM_FLRF_gdf_intersection.to_csv('JM_FLRF_gdf_intersection_SW.csv')
 
 # join surface water flood maps
 for i in ["20", "50", "100", "200", "500", "1500"]:
