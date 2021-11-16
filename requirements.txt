@@ -1,6 +1,7 @@
+geopandas
 numpy
 pandas
-geopandas
+pygeos
 rioxarray
 shapely
 scipy
