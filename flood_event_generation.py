@@ -15,6 +15,8 @@ Outputs
 - Flood depth at each exposure point, for each event
 
 """
+import os
+
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -22,10 +24,10 @@ import pygeos.creation
 import rioxarray
 from scipy.stats.mstats import gmean
 
-JM_HAZ_T500_02 = gpd.read_file("event_points_hydrological_units/JM_HAZ_T500_02.shp")
-PrcipOPInfo = pd.read_csv("event_data/PrcipOPInfo.csv")
-RiverOPInfo = pd.read_csv("event_data/RiverOPInfo.csv")
-SimEventRP = pd.read_csv("event_data/SimEventRP.csv")
+JM_HAZ_T500_02 = gpd.read_file("inputs/event_points_hydrological_units/JM_HAZ_T500_02.shp")
+PrcipOPInfo = pd.read_csv("inputs/event_data/PrcipOPInfo.csv")
+RiverOPInfo = pd.read_csv("inputs/event_data/RiverOPInfo.csv")
+SimEventRP = pd.read_csv("inputs/event_data/SimEventRP.csv")
 
 # fluvial events event obs points intersect with hydrological units
 geometry = pygeos.creation.points(RiverOPInfo["op.lon"].values, RiverOPInfo["op.lat"].values)
@@ -114,22 +116,22 @@ fluvial_events_intersection_gm["interpolate_between_max_event"] = np.where(
 )
 
 # fluvial flood maps grid intersect with hydrological units
-if os.path.exists("JM_FLRF_gdf_intersection.csv"):
-    JM_FLRF_gdf_intersection = pd.read_csv("JM_FLRF_gdf_intersection.csv", index=False)
+if os.path.exists("outputs/JM_FLRF_gdf_intersection.csv"):
+    JM_FLRF_gdf_intersection = pd.read_csv("outputs/JM_FLRF_gdf_intersection.csv")
 else:
-    JM_FLRF = rioxarray.open_rasterio('fluvial_raw_fld_depth/JM_FLRF_UD_Q20_RD_02.tif')  # should this be Q1500 for greatest extent?
+    JM_FLRF = rioxarray.open_rasterio('inputs/fluvial_raw_fld_depth/JM_FLRF_UD_Q20_RD_02.tif')  # should this be Q1500 for greatest extent?
     JM_FLRF = JM_FLRF.to_dataframe('results').reset_index()
     JM_FLRF = JM_FLRF[JM_FLRF['results']>0]
     geometry = pygeos.creation.points(JM_FLRF.x, JM_FLRF.y)
     JM_FLRF_gdf = gpd.GeoDataFrame(JM_FLRF,crs="EPSG:4326",geometry=geometry)
     JM_FLRF_gdf_intersection = JM_FLRF_gdf.sjoin(JM_HAZ_T500_02, predicate='within', how='left')
     JM_FLRF_gdf_intersection = JM_FLRF_gdf_intersection[["y", "x", "T500_ID", "T500_Type", "T1000_ID", "T1000_Type"]]
-    JM_FLRF_gdf_intersection.to_csv('JM_FLRF_gdf_intersection.csv')
+    JM_FLRF_gdf_intersection.to_csv('outputs/JM_FLRF_gdf_intersection.csv', index=False)
 
 # join fluvial flood maps
 for i in ["20", "50", "100", "200", "500", "1500"]:
     JM_FLRF = rioxarray.open_rasterio(
-        "fluvial_raw_fld_depth/JM_FLRF_UD_Q" + i + "_RD_02.tif"
+        "inputs/fluvial_raw_fld_depth/JM_FLRF_UD_Q" + i + "_RD_02.tif"
     )
     JM_FLRF = JM_FLRF.to_dataframe("results").reset_index()
     JM_FLRF = JM_FLRF.rename(columns={"results": i})
@@ -140,8 +142,6 @@ for i in ["20", "50", "100", "200", "500", "1500"]:
 
 # assume flood depth == 0 @ rp 2
 JM_FLRF_gdf_intersection["2"] = [0] * JM_FLRF_gdf_intersection.shape[0]
-# JM_FLRF_gdf_intersection.to_csv('JM_FLRF_gdf_intersection_2.csv')
-# JM_FLRF_gdf_intersection = pd.read_csv('JM_FLRF_gdf_intersection_2.csv')
 
 # merge events to the grid based on hydrological unit
 # apply log relationship between flood depths to events in event dataset
@@ -178,7 +178,7 @@ for event in (
 
     # merge['extrapolated_depth'] = merge.apply(lambda row: logFunc(row['geometric_mean_rp'],row['log_a'],row['log_b']), axis=1)
     merge = merge[["x", "y", "extrapolated_depth"]]
-    merge.to_csv("merge" + str(event) + ".csv")
+    merge.to_csv("outputs/merge" + str(event) + "_RF.csv")
 
     # df1=merge.interpolate()
     # geometry=[Point(xyz) for xyz in zip(merge.iloc[:, 0], merge.iloc[:, 1], merge.iloc[:, 2])]
@@ -260,34 +260,32 @@ surface_water_events["interpolate_between_max_event"] = np.where(
     ),
 )
 
-if os.path.exists("JM_FLRF_gdf_intersection_SW.csv"):
-    JM_FLRF_gdf_intersection_SW = pd.read_csv("JM_FLRF_gdf_intersection_SW.csv")
+if os.path.exists("outputs/JM_FLSW_gdf_intersection.csv"):
+    JM_FLSW_gdf_intersection_SW = pd.read_csv("outputs/JM_FLSW_gdf_intersection.csv")
 else:
-    JM_FLRF = rioxarray.open_rasterio('surface_water_raw_fld_depth/JM_FLSW_UD_Q20_RD_02.tif')
-    JM_FLRF = JM_FLRF.to_dataframe('results').reset_index()
-    JM_FLRF = JM_FLRF[JM_FLRF['results']>0]
-    geometry = pygeos.creation.points(JM_FLRF['x'], JM_FLRF['y'])
-    JM_FLRF_gdf = gpd.GeoDataFrame(JM_FLRF,crs="EPSG:4326",geometry=geometry)
-    JM_FLRF_gdf_intersection = JM_FLRF_gdf.sjoin_nearest(PrcipOPInfo_gdf, how='left')
-    JM_FLRF_gdf_intersection.to_csv('JM_FLRF_gdf_intersection_SW.csv')
+    JM_FLSW = rioxarray.open_rasterio('inputs/surface_water_raw_fld_depth/JM_FLSW_UD_Q20_RD_02.tif')
+    JM_FLSW = JM_FLSW.to_dataframe('results').reset_index()
+    JM_FLSW = JM_FLSW[JM_FLSW['results']>0]
+    geometry = pygeos.creation.points(JM_FLSW['x'], JM_FLSW['y'])
+    JM_FLSW_gdf = gpd.GeoDataFrame(JM_FLSW,crs="EPSG:4326",geometry=geometry)
+    JM_FLSW_gdf_intersection_SW = JM_FLSW_gdf.sjoin_nearest(PrcipOPInfo_gdf, how='left')
+    JM_FLSW_gdf_intersection_SW.to_csv('outputs/JM_FLSW_gdf_intersection.csv')
 
 # join surface water flood maps
 for i in ["20", "50", "100", "200", "500", "1500"]:
     JM_FLSW = rioxarray.open_rasterio(
-        "surface_water_raw_fld_depth/JM_FLSW_UD_Q" + i + "_RD_02.tif"
+        "inputs/surface_water_raw_fld_depth/JM_FLSW_UD_Q" + i + "_RD_02.tif"
     )
     JM_FLSW = JM_FLSW.to_dataframe("results").reset_index()
     JM_FLSW = JM_FLSW.rename(columns={"results": i})
     print(JM_FLSW)
     JM_FLSW = JM_FLSW[JM_FLSW[i] > 0]
-    JM_FLRF_gdf_intersection_SW = pd.merge(
-        JM_FLRF_gdf_intersection_SW, JM_FLSW[["x", "y", i]], on=["x", "y"]
+    JM_FLSW_gdf_intersection_SW = pd.merge(
+        JM_FLSW_gdf_intersection_SW, JM_FLSW[["x", "y", i]], on=["x", "y"]
     )
 
 # assume flood depth == 0 @ rp 2
 JM_FLSW_gdf_intersection_SW["2"] = [0] * JM_FLSW_gdf_intersection_SW.shape[0]
-# JM_FLSW_gdf_intersection_SW.to_csv('JM_FLSW_gdf_intersection_SW_2.csv')
-# JM_FLSW_gdf_intersection_SW = pd.read_csv('JM_FLSW_gdf_intersection_SW_2.csv')
 
 # merge events to the grid based on hydrological unit
 # apply log relationship between flood depths to events in event dataset
@@ -320,7 +318,7 @@ for event in surface_water_events["event.id"].drop_duplicates().to_list()[1:5]:
 
     # merge['extrapolated_depth'] = merge.apply(lambda row: logFunc(row['geometric_mean_rp'],row['log_a'],row['log_b']), axis=1)
     merge = merge[["x", "y", "extrapolated_depth"]]
-    merge.to_csv("merge" + str(event) + "_SW.csv")
+    merge.to_csv("outputs/merge" + str(event) + "_SW.csv")
 
     # df1=merge.interpolate()
     # geometry=[Point(xyz) for xyz in zip(merge.iloc[:, 0], merge.iloc[:, 1], merge.iloc[:, 2])]
