@@ -198,29 +198,30 @@ surface_water_events = pd.merge(
     how="left",
 )  ## get only river obs points
 
+
 # interpolation bounds per event
 surface_water_events["interpolate_between_min_event"] = np.where(
-    surface_water_events["geometric_mean_rp"] <= 20,
+    surface_water_events["rp"] <= 20,
     2,
     np.where(
-        (surface_water_events["geometric_mean_rp"] > 20)
-        & (surface_water_events["geometric_mean_rp"] <= 50),
+        (surface_water_events["rp"] > 20)
+        & (surface_water_events["rp"] <= 50),
         20,
         np.where(
-            (surface_water_events["geometric_mean_rp"] > 50)
-            & (surface_water_events["geometric_mean_rp"] <= 100),
+            (surface_water_events["rp"] > 50)
+            & (surface_water_events["rp"] <= 100),
             50,
             np.where(
-                (surface_water_events["geometric_mean_rp"] > 100)
-                & (surface_water_events["geometric_mean_rp"] <= 200),
+                (surface_water_events["rp"] > 100)
+                & (surface_water_events["rp"] <= 200),
                 100,
                 np.where(
-                    (surface_water_events["geometric_mean_rp"] > 200)
-                    & (surface_water_events["geometric_mean_rp"] <= 500),
+                    (surface_water_events["rp"] > 200)
+                    & (surface_water_events["rp"] <= 500),
                     200,
                     np.where(
-                        (surface_water_events["geometric_mean_rp"] > 500)
-                        & (surface_water_events["geometric_mean_rp"] <= 1500),
+                        (surface_water_events["rp"] > 500)
+                        & (surface_water_events["rp"] <= 1500),
                         500,
                         "nan",
                     ),
@@ -230,27 +231,27 @@ surface_water_events["interpolate_between_min_event"] = np.where(
     ),
 )
 surface_water_events["interpolate_between_max_event"] = np.where(
-    surface_water_events["geometric_mean_rp"] <= 20,
+    surface_water_events["rp"] <= 20,
     20,
     np.where(
-        (surface_water_events["geometric_mean_rp"] > 20)
-        & (surface_water_events["geometric_mean_rp"] <= 50),
+        (surface_water_events["rp"] > 20)
+        & (surface_water_events["rp"] <= 50),
         50,
         np.where(
-            (surface_water_events["geometric_mean_rp"] > 50)
-            & (surface_water_events["geometric_mean_rp"] <= 100),
+            (surface_water_events["rp"] > 50)
+            & (surface_water_events["rp"] <= 100),
             100,
             np.where(
-                (surface_water_events["geometric_mean_rp"] > 100)
-                & (surface_water_events["geometric_mean_rp"] <= 200),
+                (surface_water_events["rp"] > 100)
+                & (surface_water_events["rp"] <= 200),
                 200,
                 np.where(
-                    (surface_water_events["geometric_mean_rp"] > 200)
-                    & (surface_water_events["geometric_mean_rp"] <= 500),
+                    (surface_water_events["rp"] > 200)
+                    & (surface_water_events["rp"] <= 500),
                     500,
                     np.where(
-                        (surface_water_events["geometric_mean_rp"] > 500)
-                        & (surface_water_events["geometric_mean_rp"] <= 1500),
+                        (surface_water_events["rp"] > 500)
+                        & (surface_water_events["rp"] <= 1500),
                         1500,
                         "nan",
                     ),
