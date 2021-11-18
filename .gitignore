@@ -131,4 +131,6 @@ dmypy.json
 # Data
 outputs/*
 inputs/*
-
+bak/*
+*.qgz
+*.xz
