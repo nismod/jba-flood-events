@@ -43,14 +43,28 @@ are each OP for all event sets:
   Equation (1) to interpolate between any two flood depths (dl,du) between
   return periods (rl,ru) in the range 𝒓= 11,20,50,100,200,500,1500 .
 
-
-![$d_{y} = \left\{
+```latex
+$d_{y} = \left\{
   \begin{array}{ c l }
     0 & \quad \textrm{if } r_{y} \leq 2 \\
     d_{l} + \left( d_{u} - d_{l} \right) \frac{\log{r_{y}} - \log{r_{l}}}{\log{r_{u}} - \log{r_{l}}} & \quad \textrm{if } r_{l} < r_{y} \leq r_{u}, \forall r_{l}, r_{u} \in \mathbf{r} \\
     d_{max} & \quad \textrm{if } r_{y} > r_{max}
   \end{array}
-\right.$](https://render.githubusercontent.com/render/math?math=d_{y} = %5Cleft%5C{ %5Cbegin{array}{ c l } 0 %26 %5Cquad %5Ctextrm{if } r_{y} %5Cleq 2 %5C%5C d_{l} + %5Cleft( d_{u} - d_{l} %5Cright) %5Cfrac{%5Clog{r_{y}} - %5Clog{r_{l}}}{%5Clog{r_{u}} - %5Clog{r_{l}}} %26 %5Cquad %5Ctextrm{if } r_{l} < r_{y} %5Cleq r_{u}, %5Cforall r_{l}, r_{u} %5Cin %5Cmathbf{r} %5C%5C d_{max} %26 %5Cquad %5Ctextrm{if } r_{y} > r_{max} %5Cend{array} %5Cright.)
+\right.$
+```
+
+![Equation 1](images/eq1.svg)
+
+<!--
+Note on equation image, using github math rendering service:
+- this might stop working! could fall back to local latex
+- start with "https://render.githubusercontent.com/render/math?math="
+- then include latex, all on one line (delete newlines)
+- delete start/end "$" symbols
+- replace space " " with "%20"
+- replace       "\" with "%5C"
+- replace       "&" with "%26"
+-->
 
 The above assumes that the flood depth > 0 when the OP’s are intersected with
 the return period maps.
