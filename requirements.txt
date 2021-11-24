@@ -1,0 +1,7 @@
+geopandas
+numpy
+pandas
+pygeos
+rioxarray
+shapely
+scipy
