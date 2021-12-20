@@ -2,6 +2,8 @@ geopandas
 numpy
 pandas
 pygeos
+rasterio
 rioxarray
 shapely
 scipy
+tqdm
