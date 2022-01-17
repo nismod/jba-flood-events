@@ -18,6 +18,7 @@ Outputs
 - Fixed return period maps for future scenarios derived from events
 """
 import os
+import pathlib
 import re
 import sys
 import warnings
@@ -27,6 +28,8 @@ from glob import glob
 warnings.filterwarnings('ignore', message='.*initial implementation of Parquet.*')
 # ignore warnings about GEOS-PyGEOS conversions
 warnings.filterwarnings('ignore', message='.*incompatible with the GEOS version.*')
+# ignore warnings about sjoin_nearest with non-projected CRS
+warnings.filterwarnings('ignore', message='.*Geometry is in a geographic CRS.*')
 
 import numpy as np
 import pandas as pd
@@ -36,7 +39,7 @@ import rasterio
 import rioxarray
 
 from scipy.stats.mstats import gmean
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 
 # enable tqdm bars for pandas.DataFrame.progress_apply
 tqdm.pandas()
@@ -94,8 +97,9 @@ def main(event_set_path):
     # Files:
     # - "inputs/event_data/ObsEventRP.csv"
     # - "inputs/event_data/SimEventRP.csv"
-    # - "inputs/future_event_sets/SimEventRP*.csv"
+    # - "inputs/future_event_sets/SimEventRP.rcp26_2050s.csv"
     event_set = pd.read_csv(event_set_path, usecols=['event.id', 'op.id', 'rp'])
+    scenario_prefix = os.path.splitext(os.path.basename(event_set_path))[0]
 
     # Link River OPs to HAZs
     haz_to_river_within = hydrological_accumulation_zones \
@@ -141,7 +145,8 @@ def main(event_set_path):
 
     # Calculate precipitation event exposure
     interpolate_event_exposure(
-        precipitation_events, precip_exposure_points, hazard_prefix='FLSW')
+        precipitation_events, precip_exposure_points,
+        hazard_prefix='FLSW', scenario_prefix=scenario_prefix)
 
     # Link event river OPs to HAZ (drop precipitation OPs which are not linked)
     # (op.id, event.id) rp, T500_ID
@@ -159,7 +164,8 @@ def main(event_set_path):
 
     # Calculate river event exposure
     interpolate_event_exposure(
-        river_events_haz, river_exposure_points, hazard_prefix='FLRF')
+        river_events_haz, river_exposure_points,
+        hazard_prefix='FLRF', scenario_prefix=scenario_prefix)
 
 
 def latlon_to_gdf(df, lat_column='lat', lon_column='lon'):
@@ -232,7 +238,7 @@ def interpolate_depth_df(df):
     return depth
 
 
-def interpolate_event_exposure(event_zones, exposure_points, hazard_prefix):
+def interpolate_event_exposure(event_zones, exposure_points, hazard_prefix, scenario_prefix):
     # Cap at max RP 1500
     event_zones.loc[event_zones.rp >= 1500, 'rp'] = 1500
 
@@ -244,17 +250,24 @@ def interpolate_event_exposure(event_zones, exposure_points, hazard_prefix):
     # event_zones is now a dataframe with:
     # (T500_ID/op.id, event.id) rp, bin_index, rp_l, rp_u, rp_factor
 
-    for e in tqdm(event_zones.reset_index()['event.id'].unique()):
+    event_ids = sorted(event_zones.reset_index()['event.id'].unique())
+    for event_id in tqdm(event_ids):
         # Each HAZ in this event, with RP values
-        event_haz = event_zones.loc[e]
+        event_haz = event_zones.loc[event_id]
         # All points for this event, joined with RP values via HAZ
         event_points = exposure_points.join(event_haz).dropna()
         event_points.bin_index = event_points.bin_index.astype(np.int32)
 
         if len(event_points):
             depths = [
-                0, event_points.rp2, event_points.rp20, event_points.rp50,
-                event_points.rp100, event_points.rp200, event_points.rp500, event_points.rp1500
+                0,
+                event_points.rp2,
+                event_points.rp20,
+                event_points.rp50,
+                event_points.rp100,
+                event_points.rp200,
+                event_points.rp500,
+                event_points.rp1500
             ]
             event_points['depth_l'] = np.choose(event_points.bin_index - 1, depths)
             event_points['depth_u'] = np.choose(event_points.bin_index, depths)
@@ -263,12 +276,21 @@ def interpolate_event_exposure(event_zones, exposure_points, hazard_prefix):
             event_points.loc[event_points.rp <= 2, 'depth'] = 0
 
             # Output cells
+            # (T500_ID/op.id) depth, cell_index, event
             event_points = event_points[['depth', 'cell_index']]
             event_points = event_points[event_points.depth > 0]
-            event_points['event'] = e
-            # (T500_ID/op.id) depth, cell_index, event
-            # `hazard_prefix` should include RCP, epoch metadata from event set
-            event_points.to_parquet(f"outputs/{hazard_prefix}_{e}.parquet")
+            event_points['event'] = event_id
+
+            # `scenario_prefix` includes RCP, epoch metadata from event set
+            # `event_id_prefix` to help keep files-per-folder reasonable
+            event_id_prefix = event_id[:19]
+            output_dir = pathlib.Path(os.path.join(
+                "outputs", scenario_prefix, event_id_prefix))
+            output_dir.mkdir(parents=True, exist_ok=True)
+            event_points.to_parquet(
+                os.path.join(
+                    output_dir,
+                    f"{scenario_prefix}__{hazard_prefix}__{event_id}.parquet"))
 
 
 if __name__ == '__main__':
