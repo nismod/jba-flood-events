@@ -1,416 +1,283 @@
-"""Calculate flood event exposure
+#!/usr/bin/env python
+# coding: utf-8
+"""Find flood event depths
 
 Inputs
 ------
 - River observation points (fluvial flooding)
 - Precipitation observation points (surface water flooding)
 - Hazard accumulation zones
-- Simulated event return periods at observation points
+- Event return periods at observation points, for each scenario (observed, present, future RCPs)
 - Return period flood maps
 - Exposure points (these are user defined - here we pick a point in each cell of the return period
   flood maps which has any exposure across all return periods)
 
 Outputs
 -------
-- Flood depth at each exposure point, for each event
-
+- Flood depth at each exposure point, for each event, for each scenario
+- Fixed return period maps for future scenarios derived from events
 """
 import os
+import re
+import sys
+import warnings
+from glob import glob
+
+# ignore warnings about geopandas parquet implementation
+warnings.filterwarnings('ignore', message='.*initial implementation of Parquet.*')
+# ignore warnings about GEOS-PyGEOS conversions
+warnings.filterwarnings('ignore', message='.*incompatible with the GEOS version.*')
 
 import numpy as np
 import pandas as pd
 import geopandas as gpd
 import pygeos.creation
+import rasterio
 import rioxarray
+
 from scipy.stats.mstats import gmean
+from tqdm.notebook import tqdm
 
-JM_HAZ_T500_02 = gpd.read_file("inputs/event_points_hydrological_units/JM_HAZ_T500_02.shp")
-# TODO consider rasterising zones, https://gdal.org/programs/gdal_rasterize.html
-PrcipOPInfo = pd.read_csv("inputs/event_data/PrcipOPInfo.csv")
-RiverOPInfo = pd.read_csv("inputs/event_data/RiverOPInfo.csv")
-SimEventRP = pd.read_csv("inputs/event_data/SimEventRP.csv")
-ObsEventInfo = pd.read_csv("inputs/event_data/ObsEventInfo.csv")
-ObsEventRP = pd.read_csv("inputs/event_data/ObsEventRP.csv")
-ObsTrack = pd.read_csv("inputs/event_data/ObsTrack.csv")
+# enable tqdm bars for pandas.DataFrame.progress_apply
+tqdm.pandas()
 
-# TODO glob
-SimEventRP_rcp26_2050s = pd.read_csv("inputs/future_event_sets/SimEventRP.rcp26_2050s.csv")
-SimEventRP_rcp26_2080s = pd.read_csv("inputs/future_event_sets/SimEventRP.rcp26_2080s.csv")
-SimEventRP_rcp45_2050s = pd.read_csv("inputs/future_event_sets/SimEventRP.rcp45_2050s.csv")
-SimEventRP_rcp45_2080s = pd.read_csv("inputs/future_event_sets/SimEventRP.rcp45_2080s.csv")
-SimEventRP_rcp85_2050s = pd.read_csv("inputs/future_event_sets/SimEventRP.rcp85_2050s.csv")
-SimEventRP_rcp85_2080s = pd.read_csv("inputs/future_event_sets/SimEventRP.rcp85_2080s.csv")
+# Set of return periods, plus artificial lower/upper bound
+RPS = np.array([1e-3, 2, 20, 50, 100, 200, 500, 1500, 1e6])
 
-# fluvial events event obs points intersect with hydrological units
-geometry = pygeos.creation.points(RiverOPInfo["op.lon"].values, RiverOPInfo["op.lat"].values)
-RiverOPInfo_gdf = gpd.GeoDataFrame(RiverOPInfo, crs="EPSG:4326", geometry=geometry)
-RiverOPInfo_gdf_intersection = gpd.overlay(
-    RiverOPInfo_gdf, JM_HAZ_T500_02, how="intersection"
-)
+def main(event_set_path):
+    # Hydrological Accumulation Zones - for river flooding
+    # 'T500_ID', 'T500_Type', 'T1000_ID', 'T1000_Type', 'Country', 'Area_km2',
+    # 'geometry'
+    hydrological_accumulation_zones = gpd.read_file(
+        "inputs/event_points_hydrological_units/JM_HAZ_T500_02.shp") \
+        [['T500_ID', 'geometry']]
 
-# fluvial events subset and get geometric_mean_rp per hydrological unit
-fluvial_events = pd.merge(
-    SimEventRP,
-    RiverOPInfo_gdf_intersection[["op.id", "op.lon", "op.lat", "T500_ID"]],
-    on="op.id",
-    how="right",
-)  ## get only river obs points
-fluvial_events_intersection_gm = (
-    fluvial_events.groupby(["event.id", "T500_ID"])["rp"]
-    .apply(list)
-    .to_frame()
-    .reset_index()
-)
-fluvial_events_intersection_gm["geometric_mean_rp"] = fluvial_events_intersection_gm[
-    "rp"
-].apply(gmean)
+    # Precipitation Observation Points
+    # 'op.id', 'op.lon', 'op.lat', 'region', 'sub.region', 'agg.zone'
+    precipitation_ops = latlon_to_gdf(
+        pd.read_csv("inputs/event_data/PrcipOPInfo.csv"),
+        lat_column='op.lat', lon_column='op.lon') \
+        [['op.id', 'geometry']]
 
-fluvial_events = pd.merge(
-    SimEventRP_rcp26_2050s,
-    RiverOPInfo_gdf_intersection[["op.id", "op.lon", "op.lat", "T500_ID"]],
-    on="op.id",
-    how="right",
-)
-fluvial_events_intersection_gm_rcp26_2050s = (
-    fluvial_events.groupby(["event.id", "T500_ID"])["rp"]
-    .apply(list)
-    .to_frame()
-    .reset_index()
-)
-fluvial_events_intersection_gm_rcp26_2050s[
-    "geometric_mean_rp"
-] = fluvial_events_intersection_gm_rcp26_2050s["rp"].apply(gmean)
+    # River Observation Points (OP)
+    # 'op.id', 'op.lon', 'op.lat', 'region', 'sub.region', 'agg.zone',
+    # 'catchment.area', 'cent.lon', 'cent.lat'
+    river_ops = latlon_to_gdf(
+        pd.read_csv("inputs/event_data/RiverOPInfo.csv"),
+        lat_column='op.lat', lon_column='op.lon') \
+        [['op.id', 'geometry']]
 
-# TODO repeat for all future sets
+    # Events - ignored
+    # 'event.id', 'start.day.id', 'start.year', 'start.month', 'duration', 'extent',
+    # 'is.river', 'is.precip', 'track.id', ... 'JAM'
+    #
+    # Note that the series of three-letter country codes columns includes JAM
+    # with True/False values, but we ignore this and just include all events
+    # as all seem to relate to Jamaica OPs.
+    #
+    # We also ignore the is.river / is.precip columns, as the *events_rp file
+    # seems to disagree in terms of whether a precipitation or river OP is
+    # for reporting/metadata.
+    #
+    # NB 'track.id' for observed events is potentially interesting as a link
+    # to the IBTrACS tropical cyclone track.
+    #
+    # observed_events = pd.read_csv("inputs/event_data/ObsEventInfo.csv")
+    # simulated_events = pd.read_csv("inputs/event_data/SimEventInfo.csv")
 
-# interpolation bounds per event
-dict = {
-    "baseline": fluvial_events_intersection_gm,
-    "rcp26_2050s": fluvial_events_intersection_gm_rcp26_2050s,
-    # "rcp26_2080s": fluvial_events_intersection_gm_rcp26_2080s,
-    # "rcp45_2050s": fluvial_events_intersection_gm_rcp45_2050s,
-    # "rcp45_2080s": fluvial_events_intersection_gm_rcp45_2080s,
-    # "rcp85_2050s": fluvial_events_intersection_gm_rcp85_2050s,
-    # "rcp85_2080s": fluvial_events_intersection_gm_rcp85_2080s,
-}
+    # Event-OP return period
+    # 'event.id', 'op.id', 'rp', 'peak.day.id', 'start.day.id', 'end.day.id'
+    #
+    # Future events - same set as in SimEventInfo.csv, conditioned for
+    # different climate scenarios, RCP: 2.6/4.5/8.5, epoch: 2050/2080
+    #
+    # Files:
+    # - "inputs/event_data/ObsEventRP.csv"
+    # - "inputs/event_data/SimEventRP.csv"
+    # - "inputs/future_event_sets/SimEventRP*.csv"
+    event_set = pd.read_csv(event_set_path, usecols=['event.id', 'op.id', 'rp'])
 
-# fluvial flood maps grid intersect with hydrological units
-if os.path.exists("outputs/JM_FLRF_gdf_intersection.csv"):
-    JM_FLRF_gdf_intersection = pd.read_csv("outputs/JM_FLRF_gdf_intersection.csv")
-else:
-    JM_FLRF = rioxarray.open_rasterio('inputs/fluvial_raw_fld_depth/JM_FLRF_UD_Q20_RD_02.tif')  # should this be Q1500 for greatest extent?
-    JM_FLRF = JM_FLRF.to_dataframe('results').reset_index()
-    JM_FLRF = JM_FLRF[JM_FLRF['results']>0]
-    geometry = pygeos.creation.points(JM_FLRF.x, JM_FLRF.y)
-    JM_FLRF_gdf = gpd.GeoDataFrame(JM_FLRF,crs="EPSG:4326",geometry=geometry)
-    JM_FLRF_gdf_intersection = JM_FLRF_gdf.sjoin(JM_HAZ_T500_02, predicate='within', how='left')
-    JM_FLRF_gdf_intersection = JM_FLRF_gdf_intersection[["y", "x", "T500_ID", "T500_Type", "T1000_ID", "T1000_Type"]]
-    JM_FLRF_gdf_intersection.to_csv('outputs/JM_FLRF_gdf_intersection.csv', index=False)
+    # Link River OPs to HAZs
+    haz_to_river_within = hydrological_accumulation_zones \
+        .sjoin(river_ops, predicate='contains', how='right') \
+        [['T500_ID', 'op.id']]
 
-merge_cc = pd.read_csv("outputs/JM_FLRF_gdf_intersection.csv")[
-    ["x", "y", "T500_ID"]
-]
+    # some HAZ do not contain an OP
+    haz_without_op = hydrological_accumulation_zones[
+        ~hydrological_accumulation_zones.T500_ID.isin(haz_to_river_within.T500_ID.unique())]
+    haz_to_river_nearest = haz_without_op.sjoin_nearest(river_ops, how='left') \
+        [['T500_ID', 'op.id']]
+    haz_to_river = pd.concat([haz_to_river_within, haz_to_river_nearest])
 
-cc = "baseline"
-fluvial_events_intersection_gm = dict[cc]
-fluvial_events_intersection_gm["geometric_mean_rp"] = pd.to_numeric(
-    fluvial_events_intersection_gm["geometric_mean_rp"]
-)
+    river_rp_points = read_rp_maps_to_points(
+        'inputs/fluvial_raw_fld_depth/JM_FLRF_UD_*-aligned.tif')
+    # (T500_ID) cell_index, rp100, rp1500, rp200, rp20, rp500, rp50, rp2, geometry
+    river_exposure_points = river_rp_points.sjoin(
+        hydrological_accumulation_zones, predicate='within', how='left') \
+        .reset_index() \
+        .drop(columns='index_right') \
+        .set_index('T500_ID')
 
-fluvial_events_intersection_gm["interpolate_between_min_event"] = np.where(
-    fluvial_events_intersection_gm["geometric_mean_rp"] <= 20,
-    2,
-    np.where(
-        (fluvial_events_intersection_gm["geometric_mean_rp"] > 20)
-        & (fluvial_events_intersection_gm["geometric_mean_rp"] <= 50),
-        20,
-        np.where(
-            (fluvial_events_intersection_gm["geometric_mean_rp"] > 50)
-            & (fluvial_events_intersection_gm["geometric_mean_rp"] <= 100),
-            50,
-            np.where(
-                (fluvial_events_intersection_gm["geometric_mean_rp"] > 100)
-                & (fluvial_events_intersection_gm["geometric_mean_rp"] <= 200),
-                100,
-                np.where(
-                    (fluvial_events_intersection_gm["geometric_mean_rp"] > 200)
-                    & (fluvial_events_intersection_gm["geometric_mean_rp"] <= 500),
-                    200,
-                    np.where(
-                        (fluvial_events_intersection_gm["geometric_mean_rp"] > 500)
-                        & (
-                            fluvial_events_intersection_gm["geometric_mean_rp"]
-                            <= 1500
-                        ),
-                        500,
-                        1500,
-                    ),
-                ),
-            ),
-        ),
-    ),
-)
-fluvial_events_intersection_gm["interpolate_between_max_event"] = np.where(
-    fluvial_events_intersection_gm["geometric_mean_rp"] <= 20,
-    20,
-    np.where(
-        (fluvial_events_intersection_gm["geometric_mean_rp"] > 20)
-        & (fluvial_events_intersection_gm["geometric_mean_rp"] <= 50),
-        50,
-        np.where(
-            (fluvial_events_intersection_gm["geometric_mean_rp"] > 50)
-            & (fluvial_events_intersection_gm["geometric_mean_rp"] <= 100),
-            100,
-            np.where(
-                (fluvial_events_intersection_gm["geometric_mean_rp"] > 100)
-                & (fluvial_events_intersection_gm["geometric_mean_rp"] <= 200),
-                200,
-                np.where(
-                    (fluvial_events_intersection_gm["geometric_mean_rp"] > 200)
-                    & (fluvial_events_intersection_gm["geometric_mean_rp"] <= 500),
-                    500,
-                    np.where(
-                        (fluvial_events_intersection_gm["geometric_mean_rp"] > 500)
-                        & (
-                            fluvial_events_intersection_gm["geometric_mean_rp"]
-                            <= 1500
-                        ),
-                        1500,
-                        1500,
-                    ),
-                ),
-            ),
-        ),
-    ),
-)
+    precip_rp_points = read_rp_maps_to_points(
+        'inputs/surface_water_raw_fld_depth/JM_FLSW_UD_*-aligned.tif')
+    # (op.id) cell_index, rp100, rp1500, rp200, rp20, rp500, rp50, rp2, geometry
+    precip_exposure_points = precip_rp_points.sjoin_nearest(
+        precipitation_ops, how='left') \
+        .reset_index() \
+        .drop(columns='index_right') \
+        .set_index('op.id')
 
-JM_FLRF_gdf_intersection = pd.read_csv("outputs/JM_FLRF_gdf_intersection.csv")
-JM_FLRF_gdf_intersection["x"] = pd.to_numeric(JM_FLRF_gdf_intersection["x"]).round(10)
-JM_FLRF_gdf_intersection["y"] = pd.to_numeric(JM_FLRF_gdf_intersection["y"]).round(10)
+    # Set index and extract only return period column
+    # (op.id, event.id) rp
+    events = event_set.copy().set_index(['op.id', 'event.id'])
 
-# join fluvial flood maps
-for i in ["20", "50", "100", "200", "500", "1500"]:
-    colname = f"rp{i}"
-    JM_FLRF = rioxarray.open_rasterio(
-        "inputs/fluvial_raw_fld_depth/JM_FLRF_UD_Q" + i + "_RD_02.tif"
-    )
-    JM_FLRF = JM_FLRF.to_dataframe("results").reset_index()
-    JM_FLRF = JM_FLRF.rename(columns={"results": colname})
-    JM_FLRF = JM_FLRF[JM_FLRF[colname] > 0]
-    JM_FLRF["x"] = pd.to_numeric(JM_FLRF["x"]).round(10)
-    JM_FLRF["y"] = pd.to_numeric(JM_FLRF["y"]).round(10)
-    JM_FLRF_gdf_intersection = pd.merge(
-        JM_FLRF_gdf_intersection, JM_FLRF[["x", "y", colname]], on=["x", "y"]
-    )
+    # Extract precipitation events
+    # (op.id, event.id) rp
+    precipitation_events = events.join(precipitation_ops.set_index('op.id')) \
+        .dropna() \
+        .drop(columns='geometry') \
+        .reset_index() \
+        .set_index(['event.id', 'op.id'])
 
-# assume flood depth == 0 @ rp 2
-JM_FLRF_gdf_intersection["rp2"] = [0] * JM_FLRF_gdf_intersection.shape[0]
+    # Calculate precipitation event exposure
+    interpolate_event_exposure(
+        precipitation_events, precip_exposure_points, hazard_prefix='FLSW')
 
-# merge events to the grid based on hydrological unit
-# apply log relationship between flood depths to events in event dataset
-for event in (
-    fluvial_events_intersection_gm["event.id"].drop_duplicates().to_list()
-):
-    iter_df = fluvial_events_intersection_gm[
-        fluvial_events_intersection_gm["event.id"] == event
-    ]
+    # Link event river OPs to HAZ (drop precipitation OPs which are not linked)
+    # (op.id, event.id) rp, T500_ID
+    river_events = events.reset_index() \
+        .merge(haz_to_river, on='op.id') \
+        .dropna()
 
-    merge = pd.merge(
-        JM_FLRF_gdf_intersection, iter_df, on="T500_ID", how="right"
-    )
-    for it, row in merge.iterrows():
-        print(it, row)
-        merge.loc[it, "event"] = float(row.geometric_mean_rp)
-        merge.loc[it, "event"] = np.where(
-            merge.loc[it, "event"] < 2, 2, merge.loc[it, "event"]
-        )
-        merge.loc[it, "min_depth"] = float(row[f"rp{row.interpolate_between_min_event}"])
-        merge.loc[it, "min_depth"] = np.where(
-            merge.loc[it, "min_depth"] == 0,
-            0,
-            np.log(float(merge.loc[it, "min_depth"])),
-        )
-        merge.loc[it, "max_depth"] = float(row[f"rp{row.interpolate_between_max_event}"])
-        merge.loc[it, "min_event"] = float(row.interpolate_between_min_event)
-        merge.loc[it, "max_event"] = float(row.interpolate_between_max_event)
-        merge.loc[it, "extrapolated_depth"] = merge.loc[it, "min_depth"] + (
-            (merge.loc[it, "max_event"] - merge.loc[it, "min_event"])
-            / (merge.loc[it, "max_event"] - merge.loc[it, "min_event"])
-        ) * (merge.loc[it, "max_depth"] - merge.loc[it, "min_depth"])
+    # Assert river + precip >= all (could have increased when linking river HAZ)
+    assert len(river_events) + len(precipitation_events) - len(events) >= 0
 
-    merge = merge[["x", "y", "extrapolated_depth"]]
-    merge.to_csv("outputs/" + str(event) + str(cc) + ".csv")
+    # Take the geometric mean of Event/OP return periods if multiple OPs per HAZ
+    # (T500_ID, event.id) rp
+    river_events_haz = river_events.groupby(['event.id', 'T500_ID']) \
+        .agg({'rp': gmean})
+
+    # Calculate river event exposure
+    interpolate_event_exposure(
+        river_events_haz, river_exposure_points, hazard_prefix='FLRF')
 
 
-# pluvial event obs points split using nearest neighbour
-geometry = pygeos.creation.points(PrcipOPInfo["op.lon"], PrcipOPInfo["op.lat"])
-PrcipOPInfo_gdf = gpd.GeoDataFrame(PrcipOPInfo, crs="EPSG:4326", geometry=geometry)
+def latlon_to_gdf(df, lat_column='lat', lon_column='lon'):
+    geometry = pygeos.creation.points(df[lon_column], df[lat_column])
+    return gpd.GeoDataFrame(df, crs="EPSG:4326", geometry=geometry)
 
-# link surface water events to observation points
-surface_water_events = pd.merge(
-    SimEventRP,
-    PrcipOPInfo_gdf[["op.id", "op.lon", "op.lat"]],
-    on="op.id",
-    how="right",
-)  ## get only river obs points
 
-surface_water_events_rcp26_2050s = pd.merge(
-    SimEventRP_rcp26_2050s,
-    PrcipOPInfo_gdf[["op.id", "op.lon", "op.lat"]],
-    on="op.id",
-    how="right",
-)
-# TODO repeat for all future scenarios
+def read_rp_map(fname):
+    """Read flood maps, use all cells with any depth > 0 as potential exposure
+    points
+    """
+    rp = re.search(r'Q(\d+)_', fname).group(1)
+    colname = f'rp{rp}'
+    with rasterio.open(fname) as dataset:
+        data = dataset.read(1)
+        data[data == dataset.nodata] = np.nan
+        df = pd.DataFrame({colname:data.flatten()})
 
-# # interpolation bounds per event
-cc_dict = {
-    "baseline": surface_water_events,
-    "rcp26_2050s": surface_water_events_rcp26_2050s,
-    # "rcp26_2080s": surface_water_events_rcp26_2080s,
-    # "rcp45_2050s": surface_water_events_rcp45_2050s,
-    # "rcp45_2080s": surface_water_events_rcp45_2080s,
-    # "rcp85_2050s": surface_water_events_rcp85_2050s,
-    # "rcp85_2080s": surface_water_events_rcp85_2080s,
-}
+    df = df[df[colname] > 0].dropna()
+    return df
 
-surface_water_events = cc_dict[cc]
-surface_water_events["rp"] = pd.to_numeric(surface_water_events["rp"])
 
-# interpolation bounds per event
-surface_water_events["interpolate_between_min_event"] = np.where(
-    surface_water_events["rp"] <= 20,
-    2,
-    np.where(
-        (surface_water_events["rp"] > 20) & (surface_water_events["rp"] <= 50),
-        20,
-        np.where(
-            (surface_water_events["rp"] > 50) & (surface_water_events["rp"] <= 100),
-            50,
-            np.where(
-                (surface_water_events["rp"] > 100)
-                & (surface_water_events["rp"] <= 200),
-                100,
-                np.where(
-                    (surface_water_events["rp"] > 200)
-                    & (surface_water_events["rp"] <= 500),
-                    200,
-                    np.where(surface_water_events["rp"] > 500, 500, "nan"),
-                ),
-            ),
-        ),
-    ),
-)
-surface_water_events["interpolate_between_max_event"] = np.where(
-    surface_water_events["rp"] <= 20,
-    20,
-    np.where(
-        (surface_water_events["rp"] > 20) & (surface_water_events["rp"] <= 50),
-        50,
-        np.where(
-            (surface_water_events["rp"] > 50) & (surface_water_events["rp"] <= 100),
-            100,
-            np.where(
-                (surface_water_events["rp"] > 100)
-                & (surface_water_events["rp"] <= 200),
-                200,
-                np.where(
-                    (surface_water_events["rp"] > 200)
-                    & (surface_water_events["rp"] <= 500),
-                    500,
-                    np.where(surface_water_events["rp"] > 500, 1500, "nan"),
-                ),
-            ),
-        ),
-    ),
-)
+def get_xy_df(fname):
+    """Read a raster file, convert to dataframe retaining only x,y coordinate
+    values  and 0..n index
+    """
+    xy = rioxarray.open_rasterio(fname) \
+        .to_dataframe('data') \
+        .reset_index() \
+        .drop(columns=['band','spatial_ref', 'data'])
+    return xy
 
-if os.path.exists("outputs/JM_FLSW_gdf_intersection.csv"):
-    JM_FLSW_gdf_intersection_SW = pd.read_csv("outputs/JM_FLSW_gdf_intersection.csv")
-else:
-    JM_FLSW = rioxarray.open_rasterio('inputs/surface_water_raw_fld_depth/JM_FLSW_UD_Q20_RD_02.tif')
-    JM_FLSW = JM_FLSW.to_dataframe('results').reset_index()
-    JM_FLSW = JM_FLSW[JM_FLSW['results']>0]
-    geometry = pygeos.creation.points(JM_FLSW['x'], JM_FLSW['y'])
-    JM_FLSW_gdf = gpd.GeoDataFrame(JM_FLSW,crs="EPSG:4326",geometry=geometry)
-    JM_FLSW_gdf_intersection_SW = JM_FLSW_gdf.sjoin_nearest(PrcipOPInfo_gdf, how='left')
-    JM_FLSW_gdf_intersection_SW.to_csv('outputs/JM_FLSW_gdf_intersection.csv')
 
-# join surface water flood maps
-for i in ["20", "50", "100", "200", "500", "1500"]:
-    colname = f"rp{i}"
-    JM_FLSW = rioxarray.open_rasterio(
-        "inputs/surface_water_raw_fld_depth/JM_FLSW_UD_Q" + i + "_RD_02.tif"
-    )
-    JM_FLSW = JM_FLSW.to_dataframe("results").reset_index()
-    JM_FLSW = JM_FLSW.rename(columns={"results": colname})
-    JM_FLSW["x"] = pd.to_numeric(JM_FLSW["x"]).round(10)
-    JM_FLSW["y"] = pd.to_numeric(JM_FLSW["y"]).round(10)
-    JM_FLSW = JM_FLSW[JM_FLSW[colname] > 0]
-    JM_FLSW_gdf_intersection_SW = pd.merge(
-        JM_FLSW_gdf_intersection_SW,
-        JM_FLSW[["x", "y", colname]],
-        on=["x", "y"],
-        how="right",
-    )
+def read_rp_maps_to_points(pattern):
+    # Define as an iter to use each file once
+    rp_maps = iter(sorted(glob(pattern)))
 
-# assume flood depth == 0 @ rp 2
-JM_FLSW_gdf_intersection_SW["2"] = [0] * JM_FLSW_gdf_intersection_SW.shape[0]
+    # Read first
+    rp_points = read_rp_map(next(rp_maps))
+    # Read the rest
+    for fname in rp_maps:
+        df = read_rp_map(fname)
+        rp_points = rp_points.join(df, how='outer')
 
-# merge events to the grid based on hydrological unit
-# apply log relationship between flood depths to events in event dataset
-for event in surface_water_events["event.id"].drop_duplicates().to_list()[1:5]:
-    print(surface_water_events[surface_water_events["event.id"] == event]["op.id"])
-    iter_df = surface_water_events[surface_water_events["event.id"] == event]
-    merge = pd.merge(
-        JM_FLSW_gdf_intersection_SW, iter_df, on="op.id", how="right"
-    ).reset_index(drop=True)
+    # Fill NA with zeros
+    rp_points = rp_points.fillna(0)
+    rp_points['rp2'] = 0
+    xy = get_xy_df(fname)
+    rp_points = rp_points.join(xy)
 
-    for it, row in merge.iterrows():
-        print(it)
-        merge.loc[it, "event"] = float(row.rp)
-        merge.loc[it, "event"] = np.where(
-            merge.loc[it, "event"] < 2, 2, merge.loc[it, "event"]
-        )
-        merge.loc[it, "min_depth"] = float(row[f"rp{row.interpolate_between_min_event}"])
-        merge.loc[it, "min_depth"] = np.where(
-            merge.loc[it, "min_depth"] == 0,
-            0,
-            np.log(float(merge.loc[it, "min_depth"])),
-        )
-        merge.loc[it, "max_depth"] = float(row[f"rp{row.interpolate_between_max_event}"])
-        merge.loc[it, "min_event"] = float(row.interpolate_between_min_event)
-        merge.loc[it, "max_event"] = float(row.interpolate_between_max_event)
-        merge.loc[it, "extrapolated_depth"] = merge.loc[it, "min_depth"] + (
-            (merge.loc[it, "max_event"] - merge.loc[it, "min_event"])
-            / (merge.loc[it, "max_event"] - merge.loc[it, "min_event"])
-        ) * (merge.loc[it, "max_depth"] - merge.loc[it, "min_depth"])
-        print(it)
-    merge.to_csv("outputs/" + str(event) + str(event) + "_SW.csv")
-    merge_sub = merge[["x", "y", "extrapolated_depth"]]
-    merge_sub = merge_sub.rename(
-        columns={
-            "event": event,
-            "extrapolated_depth": "extrapolated_depth" + event + cc,
-        }
-    )
-    merge_cc_SW = merge_cc_SW.merge(merge_sub, on=["x", "y"])
+    # name index
+    rp_points.index.rename('cell_index', inplace=True)
 
-for rp in [5, 20, 50, 100, 200]:
-    for it, row in merge_cc_SW.iterrows():
-        cols_of_interest = (
-            fluvial_events_intersection_gm["event.id"].drop_duplicates().to_list()
-        )
-        event_rp_diff = pd.DataFrame({})
-        for col in cols_of_interest:
-            diff = row[col] - rp
-            event_rp_diff = event_rp_diff.append(
-                pd.DataFrame({"rp": rp, "diff": abs(diff), "col": col}, index=[0])
-            )
+    # Convert to GeoDataFrame
+    return latlon_to_gdf(rp_points, lat_column='y', lon_column='x') \
+        .drop(columns=['y', 'x'])
 
-    event_match = event_rp_diff[
-        event_rp_diff["diff"] == event_rp_diff["diff"].min()
-    ]["col"].values[0]
-    merge_cc_SW.loc[it, "rp_depth" + rp] = row[
-        "extrapolated_depth" + event_match + cc
-    ]
-    merge_cc_SW.to_csv("outputs/flood_" + cc + rp + cc + ".csv")
+
+def interpolate_rp_factor(df):
+    return (
+        (np.log(df.rp) - np.log(df.rp_l))
+        / (np.log(df.rp_u) - np.log(df.rp_l)))
+
+
+def interpolate_depth_df(df):
+    depth = df.depth_l + (
+        (df.depth_u - df.depth_l)
+        * df.rp_factor)
+
+    return depth
+
+
+def interpolate_event_exposure(event_zones, exposure_points, hazard_prefix):
+    # Cap at max RP 1500
+    event_zones.loc[event_zones.rp >= 1500, 'rp'] = 1500
+
+    bin_index = np.searchsorted(RPS, event_zones.rp, side='left')
+    event_zones['bin_index'] = bin_index
+    event_zones['rp_l'] = RPS[bin_index - 1]
+    event_zones['rp_u'] = RPS[bin_index]
+    event_zones['rp_factor'] = interpolate_rp_factor(event_zones)
+    # event_zones is now a dataframe with:
+    # (T500_ID/op.id, event.id) rp, bin_index, rp_l, rp_u, rp_factor
+
+    for e in tqdm(event_zones.reset_index()['event.id'].unique()):
+        # Each HAZ in this event, with RP values
+        event_haz = event_zones.loc[e]
+        # All points for this event, joined with RP values via HAZ
+        event_points = exposure_points.join(event_haz).dropna()
+        event_points.bin_index = event_points.bin_index.astype(np.int32)
+
+        if len(event_points):
+            depths = [
+                0, event_points.rp2, event_points.rp20, event_points.rp50,
+                event_points.rp100, event_points.rp200, event_points.rp500, event_points.rp1500
+            ]
+            event_points['depth_l'] = np.choose(event_points.bin_index - 1, depths)
+            event_points['depth_u'] = np.choose(event_points.bin_index, depths)
+            event_points['depth'] = interpolate_depth_df(event_points)
+            # Any RP < 2 gets zero depth
+            event_points.loc[event_points.rp <= 2, 'depth'] = 0
+
+            # Output cells
+            event_points = event_points[['depth', 'cell_index']]
+            event_points = event_points[event_points.depth > 0]
+            event_points['event'] = e
+            # (T500_ID/op.id) depth, cell_index, event
+            # `hazard_prefix` should include RCP, epoch metadata from event set
+            event_points.to_parquet(f"outputs/{hazard_prefix}_{e}.parquet")
+
+
+if __name__ == '__main__':
+    try:
+        event_set_path = sys.argv[1]
+        print(f"Processing events defined in {event_set_path}")
+    except:
+        print("ERROR: did not get expected arguments")
+        print("Expected usage:")
+        print(f"    python {os.path.basename(__file__)} event_set.csv")
+
+    main(event_set_path)
