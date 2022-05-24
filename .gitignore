@@ -134,3 +134,6 @@ inputs/*
 bak/*
 *.qgz
 *.xz
+*.tar.gz
+*.tar.xz
+*.tif

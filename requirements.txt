@@ -1,7 +1,11 @@
 geopandas
+jupyter
 numpy
 pandas
+pyarrow
 pygeos
+rasterio
 rioxarray
 shapely
 scipy
+tqdm
