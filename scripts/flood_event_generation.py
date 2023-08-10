@@ -26,17 +26,12 @@ import sys
 import warnings
 from glob import glob
 
-# ignore warnings about geopandas parquet implementation
-warnings.filterwarnings("ignore", message=".*initial implementation of Parquet.*")
-# ignore warnings about GEOS-PyGEOS conversions
-warnings.filterwarnings("ignore", message=".*incompatible with the GEOS version.*")
 # ignore warnings about sjoin_nearest with non-projected CRS
 warnings.filterwarnings("ignore", message=".*Geometry is in a geographic CRS.*")
 
 import numpy as np
 import pandas as pd
 import geopandas as gpd
-import pygeos.creation
 import rasterio
 import rioxarray
 
@@ -189,7 +184,7 @@ def main(event_set_path):
 
 
 def latlon_to_gdf(df, lat_column="lat", lon_column="lon"):
-    geometry = pygeos.creation.points(df[lon_column], df[lat_column])
+    geometry = gpd.points_from_xy(df[lon_column], df[lat_column])
     return gpd.GeoDataFrame(df, crs="EPSG:4326", geometry=geometry)
 
 

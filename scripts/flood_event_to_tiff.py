@@ -12,7 +12,6 @@ from glob import glob
 import geopandas
 import numpy
 import pandas
-import pygeos
 import rasterio
 from tqdm import tqdm
 
@@ -33,7 +32,7 @@ def save_to_gpkg(df, slug):
     else:
         zone_id = "op.id"
     lons, lats = transform * (df.row, df.col)
-    df["geometry"] = pygeos.creation.points(lons, lats)
+    df["geometry"] = geopandas.points_from_xy(lons, lats)
     gdf = geopandas.GeoDataFrame(df[[zone_id, "depth", "geometry"]])
     gdf.to_file(os.path.join("outputs", f"{slug}.gpkg"), driver="GPKG")
 
@@ -74,6 +73,7 @@ if __name__ == "__main__":
         print(
             f"    python {os.path.basename(__file__)} --output=tiff,gpkg template.tiff event_*.parquet"
         )
+        sys.exit()
 
     crs, ncols, nrows, transform = read_transform(tiff_path)
 

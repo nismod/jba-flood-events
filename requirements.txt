@@ -3,7 +3,6 @@ jupyter
 numpy
 pandas
 pyarrow
-pygeos
 rasterio
 rioxarray
 scipy
