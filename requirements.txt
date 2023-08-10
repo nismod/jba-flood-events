@@ -6,6 +6,7 @@ pyarrow
 pygeos
 rasterio
 rioxarray
-shapely
 scipy
+shapely
+snail
 tqdm
