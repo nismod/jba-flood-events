@@ -64,27 +64,34 @@ if __name__ == "__main__":
         print("Will output in formats (tiff and/or gpkg):", outputs)
 
         tiff_path = sys.argv[2]
-        print(f"Using transform defined in {tiff_path}")
-        event_paths = sys.argv[3:]
-        print(f"Reading {len(event_paths)} events")
+        print(f"Using transform defined in: {tiff_path}")
+        parquet_dataset = sys.argv[3]
+        print(f"From parquet dataset: {parquet_dataset}")
+        hazard = sys.argv[4]
+        print(f"For hazard type: {hazard}")
+        event_ids = sys.argv[5:]
+        print(f"Reading {len(event_ids)} events")
     except:
         print("ERROR: did not get expected arguments")
         print("Expected usage:")
         print(
-            f"    python {os.path.basename(__file__)} --output=tiff,gpkg template.tiff event_*.parquet"
+            f"    python {os.path.basename(__file__)} --output=tiff,gpkg template.tiff parquet_dataset {{FLRF,FLSW}} EVENT_ID*"
         )
         sys.exit()
 
     crs, ncols, nrows, transform = read_transform(tiff_path)
 
-    for fname in tqdm(event_paths):
-        df = pandas.read_parquet(fname)
-        slug, _ = os.path.splitext(os.path.basename(fname))
+    for event_id in tqdm(event_ids):
+        df = pandas.read_parquet(
+            parquet_dataset,
+            filters=[("event", "==", event_id), ("hazard", "==", hazard)],
+        )
 
         rows, cols = numpy.unravel_index(df.cell_index, (nrows, ncols))
         df["row"] = rows
         df["col"] = cols
 
+        slug = f"{event_id}_{hazard}"
         if "gpkg" in outputs:
             save_to_gpkg(df, slug)
         if "tiff" in outputs:
