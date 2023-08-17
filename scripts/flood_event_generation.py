@@ -126,6 +126,7 @@ def main(event_set_path):
     # Calculate precipitation event exposure
     logging.info("Processing precipitation events.")
     precipitation_events = link_event_op_haz(event_set, precip_haz_op)
+    precipitation_events.to_csv(f"outputs/{scenario_prefix}_precip.csv")
     interpolate_event_exposure(
         precipitation_events,
         precip_exposure_points,
@@ -136,6 +137,7 @@ def main(event_set_path):
     # Calculate river event exposure
     logging.info("Processing river events.")
     river_events = link_event_op_haz(event_set, river_haz_op)
+    river_events.to_csv(f"outputs/{scenario_prefix}_river.csv")
     interpolate_event_exposure(
         river_events,
         river_exposure_points,
