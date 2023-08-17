@@ -306,14 +306,12 @@ def event_depths(
         event_points = event_points.reset_index()[["T500_ID", "depth", "cell_index"]]
         event_points = event_points[event_points.depth > 0]
         event_points["event"] = event_id
-        event_points["event_prefix"] = event_id[:19]
         event_points["hazard"] = hazard_prefix
 
         output_dir = pathlib.Path("outputs") / scenario_prefix
         output_dir.mkdir(parents=True, exist_ok=True)
         event_points.to_parquet(
-            output_dir,
-            partition_cols=["T500_ID", "event_prefix", "event", "hazard"],
+            output_dir, partition_cols=["T500_ID", "event"], index=False
         )
 
 
