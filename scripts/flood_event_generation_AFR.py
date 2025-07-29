@@ -21,12 +21,12 @@ Outputs
 """
 import logging
 import os
-import pathlib
 import re
 import sys
 import warnings
 from glob import glob
 from functools import partial
+from pathlib import Path
 
 # ignore warnings about sjoin_nearest with non-projected CRS
 warnings.filterwarnings("ignore", message=".*Geometry is in a geographic CRS.*")
@@ -46,117 +46,75 @@ from tqdm.contrib.concurrent import process_map
 RPS = np.array([1e-3, 2, 20, 50, 100, 200, 500, 1500, 1e6])
 
 
-
-def main(event_set_path):
+def main(event_set_path, data_dir):
     # Hydrological Accumulation Zones - for river flooding
     # 'T500_ID', 'T500_Type', 'T1000_ID', 'T1000_Type', 'Country', 'Area_km2',
     # 'geometry'
-    country_codes = pd.read_excel('C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/incoming_data/country_codes.xlsx')
-
+    country_codes = pd.read_excel(data_dir / 'incoming_data' / 'country_codes.xlsx')
+    processed_data_path = data_dir / "processed_data"
     for index, row in country_codes.iterrows():
+        
         i = row['HAZ']
         j = row['ISO_3166']
-        k = row['Region']
+        # k = row['Region']
         m = row['Country_undefended']
-        path = f"C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/incoming_data/HAZ/JBA_HAZ_{i}_02/{j}_HAZ_T500_02.shp"
+        path = data_dir / f"incoming_data/HAZ/JBA_HAZ_{i}_02/{j}_HAZ_T500_02.shp"
         print(f"Trying to read: {path}")
         if not os.path.exists(path):
             print(f"File does not exist: {path}")
             continue
         hydrological_accumulation_zones = gpd.read_file(path)[["T500_ID", "geometry"]]
         print(hydrological_accumulation_zones.head())
-      
 
-    # Precipitation Observation Points
-    # 'op.id', 'op.lon', 'op.lat', 'region', 'sub.region', 'agg.zone'
-    # precipitation_ops = latlon_to_gdf(
-    #     pd.read_csv("inputs/event_data/PrcipOPInfo.csv"),
-    #     lat_column="op.lat",
-    #     lon_column="op.lon",
-    # )[["op.id", "geometry"]]
-    # precip_haz_op = link_haz_op(hydrological_accumulation_zones, precipitation_ops)
-    # precip_rp_points = read_rp_maps_to_points(
-    #     "inputs/surface_water_raw_fld_depth/JM_FLSW_UD_*-aligned.tif"
-    # )
-    # # (T500_ID) cell_index, rp100, rp1500, rp200, rp20, rp500, rp50, rp2, geometry
-    # precip_exposure_points = link_haz_ep(
-    #     hydrological_accumulation_zones, precip_rp_points
-    # )
-
-    # River Observation Points (OP)
-    # 'op.id', 'op.lon', 'op.lat', 'region', 'sub.region', 'agg.zone',
-    # 'catchment.area', 'cent.lon', 'cent.lat'
+        # River Observation Points (OP)
+        # 'op.id', 'op.lon', 'op.lat', 'region', 'sub.region', 'agg.zone',
+        # 'catchment.area', 'cent.lon', 'cent.lat'
         river_ops = latlon_to_gdf(
-            pd.read_csv(f"C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/incoming_data/GlobalEventSet/R{k}/RiverOpInfo_*.csv"),
+            pd.read_csv(data_dir / "incoming_data" / "GlobalEventSet" / "R11" / "RiverOpInfo_20161207.csv"),
             lat_column="op.lat",
             lon_column="op.lon",
         )[["op.id", "geometry"]]
         river_haz_op = link_haz_op(hydrological_accumulation_zones, river_ops)
-        river_rp_points = read_rp_maps_to_points(
-            f"C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/incoming_data/GlobalUndefendedFloodMaps/{m}/WGS84/GeoTIFFs/GFM_{m}_2016_WGS84_RD_River/{j}_FLRF_UD_*_RD_02.tif"
-        )
+        river_rp_points = read_rp_maps_to_points(str(
+            data_dir / "incoming_data" / "GlobalUndefendedFloodMaps" / m / "WGS84" / "GeoTIFFs" / f"GFM_{m}_2016_WGS84_RD_River" / f"{j}_FLRF_UD_*_RD_02.tif"
+        ))
         # (T500_ID) cell_index, rp100, rp1500, rp200, rp20, rp500, rp50, rp2, geometry
         river_exposure_points = link_haz_ep(
             hydrological_accumulation_zones, river_rp_points
         )
 
-    # Events - ignored
-    # 'event.id', 'start.day.id', 'start.year', 'start.month', 'duration', 'extent',
-    # 'is.river', 'is.precip', 'track.id', ... 'JAM'
-    #
-    # Note that the series of three-letter country codes columns includes JAM
-    # with True/False values, but we ignore this and just include all events
-    # as all seem to relate to Jamaica OPs.
-    #
-    # We also ignore the is.river / is.precip columns, as the *events_rp file
-    # seems to disagree in terms of whether a precipitation or river OP is
-    # for reporting/metadata.
-    #
-    # NB 'track.id' for observed events is potentially interesting as a link
-    # to the IBTrACS tropical cyclone track.
-    #
-    # observed_events = pd.read_csv("inputs/event_data/ObsEventInfo.csv")
-    # simulated_events = pd.read_csv("inputs/event_data/SimEventInfo.csv")
-
-    # Event-OP return period
-    # 'event.id', 'op.id', 'rp', 'peak.day.id', 'start.day.id', 'end.day.id'
-    #
-    # Future events - same set as in SimEventInfo.csv, conditioned for
-    # different climate scenarios, RCP: 2.6/4.5/8.5, epoch: 2050/2080
-    #
-    # Files:
-    # - "inputs/event_data/ObsEventRP.csv"
-    # - "inputs/event_data/SimEventRP.csv"
-    # - "inputs/future_event_sets/SimEventRP.rcp26_2050s.csv"
-    #
-    # Read, set index and keep only return period column
-    # (op.id, event.id) rp
+        # Event-OP return period
+        # 'event.id', 'op.id', 'rp', 'peak.day.id', 'start.day.id', 'end.day.id'
+        #
+        # Future events - same set as in SimEventInfo.csv, conditioned for
+        # different climate scenarios, RCP: 2.6/4.5/8.5, epoch: 2050/2080
+        #
+        # Files:
+        # - "inputs/event_data/ObsEventRP.csv"
+        # - "inputs/event_data/SimEventRP.csv"
+        # - "inputs/future_event_sets/SimEventRP.rcp26_2050s.csv"
+        #
+        # Read, set index and keep only return period column
+        # (op.id, event.id) rp
         event_set = pd.read_csv(
             event_set_path, usecols=["event.id", "op.id", "rp"]
         ).set_index(["op.id", "event.id"])
         scenario_prefix = os.path.splitext(os.path.basename(event_set_path))[0]
 
-    # # Calculate precipitation event exposure
-    # logging.info("Processing precipitation events.")
-    # precipitation_events = link_event_op_haz(event_set, precip_haz_op)
-    # precipitation_events.to_csv(f"outputs/{scenario_prefix}_precip.csv")
-    # interpolate_event_exposure(
-    #     precipitation_events,
-    #     precip_exposure_points,
-    #     hazard_prefix="FLSW",
-    #     scenario_prefix=scenario_prefix,
-    # )
-
-    # Calculate river event exposure
+        # Calculate river event exposure
+        output_dir = Path(processed_data_path / "outputs" / f"{scenario_prefix}_{j}")
+        output_dir.mkdir(parents=True, exist_ok=True)
         logging.info("Processing river events.")
         river_events = link_event_op_haz(event_set, river_haz_op)
-        river_events.to_csv(os.path.join("C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/processed_data",f"outputs/{scenario_prefix}_{j}_river.csv"))
+        river_events.to_csv(processed_data_path / "outputs" / f"{scenario_prefix}_{j}_river.csv")
         interpolate_event_exposure(
             river_events,
             river_exposure_points,
             hazard_prefix="FLRF",
-            scenario_prefix=scenario_prefix,
+            output_dir=output_dir,
         )
+        
+   
 
 
 def link_event_op_haz(events, haz_op):
@@ -259,7 +217,7 @@ def interpolate_depth_df(df):
 
 
 def interpolate_event_exposure(
-    event_zones, exposure_points, hazard_prefix, scenario_prefix
+    event_zones, exposure_points, hazard_prefix, output_dir
 ):
     # Cap at max RP 1500
     event_zones.loc[event_zones.rp >= 1500, "rp"] = 1500
@@ -278,7 +236,7 @@ def interpolate_event_exposure(
         event_zones=event_zones,
         exposure_points=exposure_points,
         hazard_prefix=hazard_prefix,
-        scenario_prefix=scenario_prefix,
+        output_dir=output_dir,
     )
     process_map(
         event_depths_partial,
@@ -289,7 +247,7 @@ def interpolate_event_exposure(
 
 
 def event_depths(
-    event_id, event_zones, exposure_points, hazard_prefix, scenario_prefix
+    event_id, event_zones, exposure_points, hazard_prefix, output_dir
 ):
     # Each HAZ in this event, with RP values
     event_haz = event_zones.loc[event_id].reset_index()
@@ -324,8 +282,6 @@ def event_depths(
         event_points["event"] = event_id
         event_points["hazard"] = hazard_prefix
 
-        output_dir = pathlib.Path("outputs") / scenario_prefix
-        output_dir.mkdir(parents=True, exist_ok=True)
         event_points.to_parquet(
             output_dir, partition_cols=["T500_ID", "event"], index=False
         )
@@ -338,15 +294,16 @@ if __name__ == "__main__":
 
     try:
         event_set_path = sys.argv[1]
+        data_dir = Path(sys.argv[2])
         logging.info(f"Processing events defined in {event_set_path}")
     except:
         logging.error(
             f"""Did not get expected arguments
 Expected usage:
-    python {os.path.basename(__file__)} event_set.csv
+    python {os.path.basename(__file__)} event_set.csv path/to/data_dir
 """
         )
         exit()
-
-    main(event_set_path)
+    # data_dir = Path(r"C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/")
+    main(event_set_path, data_dir)
     logging.info("Done.")
