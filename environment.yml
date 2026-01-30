@@ -1,0 +1,23 @@
+name: afjba
+channels:
+  - nodefaults
+  - conda-forge
+dependencies:
+  - python=3.12
+  - geopandas
+  - ipykernel
+  - jupyter
+  - matplotlib
+  - numpy
+  - pandas
+  - pyarrow
+  - rasterio
+  - rioxarray
+  - scipy
+  - scikit-learn
+  - seaborn
+  - tqdm
+  - bioconda::snakemake
+  - pip
+  - pip:
+    - nismod-snail
