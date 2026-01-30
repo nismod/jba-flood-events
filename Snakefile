@@ -1,11 +1,3 @@
-REGIONS = [R11, R12]
-REGION_CODES = [20161207, 20161126] 
-SCENARIOS = ["ObsEventRp", "SimEventRp"]
-
-
-# rule all:
-#     input:
-#         "plots/quals.svg"
 
 rule countries:
     input:
@@ -24,6 +16,17 @@ rule flood_gen:
     script:
         "scripts/flood_event_generation_AFR.py"
 
-rule tif_creation
-
-rule flood/transport overlap
+rule clip_hazard_to_HAZ:
+    """Crop hazard map to HAZ bbox
+    """
+    input:
+        tiff="processed/hazard/flrf_ud_Q{RP}.tif",
+        gpkg="processed/basins/haz_500.gpkg",
+    output:
+        tiff="processed/event_depths/{HAZ}/hazard/flrf_ud_Q{RP}.tif"
+    shell:
+        """
+        echo {input.tiff}
+        echo {input.gpkg}
+        touch {output.tiff}
+        """
