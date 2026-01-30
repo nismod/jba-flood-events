@@ -140,3 +140,6 @@ bak/*
 *.tar.gz
 *.tar.xz
 *.tif
+
+# Snakemake
+.snakemake
