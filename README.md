@@ -4,14 +4,18 @@ Process JBA flood events for exposure analysis
 
 ## Setup
 
-Requirements are Python and packages listed in `requirements.txt`.
+Requirements are Python and packages listed in `environment.yml`.
 
-To set up a virtual environment using venv:
+To set up an environment using [`micromamba`](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html):
 
+```bash
+micromamba env create -f environment.yml -y
 ```
-python3 -m venv ./venv
-. venv/bin/activate
-pip install -r requirements.txt
+
+To activate the environment:
+
+```bash
+micromamba activate afjba
 ```
 
 ## Data
