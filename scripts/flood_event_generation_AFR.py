@@ -30,7 +30,6 @@ from functools import partial
 from pathlib import Path
 from rasterio.plot import show
 
-import numpy as np
 import pandas as pd
 import geopandas as gpd
 import rasterio
@@ -45,8 +44,10 @@ import openpyxl
 from scipy.stats.mstats import gmean
 from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
-import matplotlib.pyplot as plt
+
 import seaborn as sns
+import matplotlib.pyplot as plt
+import numpy as np
 
 # ignore warnings about sjoin_nearest with non-projected CRS
 warnings.filterwarnings("ignore", message=".*Geometry is in a geographic CRS.*")
@@ -136,10 +137,11 @@ def main(event_set_path, data_dir):
         # -------------------------------------------------------------------------------------------------------------------#
 
         river_event_years = pd.read_csv(data_dir / "incoming_data" / "GlobalEventSet" / "R11" / "ObsEventInfo_20161207.csv")
+        
         subset_years = river_event_years[
-        (river_event_years[k] == "TRUE") & 
-        (river_event_years["is.river"] == "TRUE")
+            river_event_years[k] & river_event_years["is.river"]
         ]
+        print(subset_years)
 
         re_haz_rp = pd.read_csv(processed_data_path / "outputs" / f"{scenario_prefix}_{j}_river.csv")
 
@@ -255,7 +257,7 @@ def main(event_set_path, data_dir):
         gdf = gpd.GeoDataFrame(gdf, geometry="geometry", crs=haz_shapefile.crs)
 
         metrics = {
-            "flooded_area_km2": "Average Flooded Area (km²)",
+            "flooded_area_m2": "Average Flooded Area (km²)",
         }
 
         # Convert flooded area to km2
@@ -356,7 +358,7 @@ def main(event_set_path, data_dir):
                     all_event_dfs.append(pd.concat(dfs, ignore_index=True))
 
                          
-               
+           
                 
 
         # Merge all events together
@@ -365,6 +367,8 @@ def main(event_set_path, data_dir):
         # Keep only what's needed
         all_event_depths = all_event_depths[["event.id", "depth","T500_ID","flood_area_km2"]].dropna()
         #all_event_depths = all_event_depths.merge(re_haz_rp,on=["event.id","T500_ID"])
+        print(all_event_depths.head())
+           
         
         all_event_depths.to_csv(processed_data_path / "outputs" / f"{scenario_prefix}_{j}_river_with_depths.csv")
         
@@ -508,30 +512,99 @@ def main(event_set_path, data_dir):
             
             # Group by year and event to get total flooded area per event per year
             grouped_area = (
-                merged.groupby(["start.year", "event_id"], as_index=False)["flood_area_km2"]
+                merged.groupby(["start.year", "event.id"], as_index=False)["flood_area_km2"]
                 .sum()
             )
-
+            grouped_area["start.year"] = grouped_area["start.year"].astype(int)
             # Bar plot: each event is a separate bar within its year
+            # Generate random colors for the number of unique events
+            num_events = grouped_area["event.id"].nunique()
+            random_colors = sns.color_palette("husl", num_events)  # "husl" gives nice varied colors
+
+            plt.figure(figsize=(10, 6))  # Bigger figure -> larger bars visually
+
             sns.barplot(
                 data=grouped_area,
                 x="start.year",
                 y="flood_area_km2",
-                hue="event_id",
+                hue="event.id",
                 dodge=True,
-                palette="viridis",
-                edgecolor="k"
+                palette=random_colors,
+                edgecolor="k",  # remove edge or make it less visible
+                linewidth=0.5    # make edge thinner if you still want it
             )
 
-            plt.title("Summed Flooded Area per Event by Year")
-            plt.xlabel("Year")
-            plt.ylabel("Flooded Area (km²)")
-            plt.legend(title="")
+            plt.title("Summed Flooded Area per Event by Year", fontsize=14)
+            plt.xlabel("Year", fontsize=12)
+            plt.ylabel("Flooded Area (km²)", fontsize=12)
+
+            # Move legend outside
+            plt.legend(
+                title="Event ID",
+                bbox_to_anchor=(1.05, 1),
+                loc="upper left",
+                borderaxespad=0.
+            )
+
             plt.tight_layout()
-            plt.savefig(os.path.join(figure_folder, "flooded_area_per_event_by_year.png"), dpi=300)
+            plt.savefig(
+                os.path.join(figure_folder, "flooded_area_per_event_by_year.png"),
+                dpi=300,
+                bbox_inches="tight"  # ensures the legend outside is saved
+            )
             plt.close()
+
             print("Saved figure: flooded_area_per_event_by_year.png")
-        
+
+        # Correlation matrix: for each event, see the correlation of flooded area between basins (HAZ)
+        corr_dir = figure_folder/"eventwise_basin_correlations"
+        os.makedirs(corr_dir, exist_ok=True)
+
+        # Loop through each event
+        for ev in all_event_depths["event.id"].unique():
+            event_data = all_event_depths[all_event_depths["event.id"] == ev]
+
+            # Pivot so each column = basin, each row = sample (e.g., pixel, timestep)
+            pivot_df = event_data.pivot_table(
+                index=event_data.index,
+                columns="T500_ID",
+                values="flood_area_km2",
+                aggfunc="sum"
+            )
+
+            # Drop columns with constant or all-NaN values
+            #pivot_df = pivot_df.loc[:, pivot_df.std() > 0]
+
+            # Compute correlation
+            corr_matrix = pivot_df.corr()
+
+            # Handle NaNs safely
+            corr_matrix = corr_matrix.fillna(0)
+
+            # Plot with seaborn (much better labels)
+            plt.figure(figsize=(14, 12))
+            sns.heatmap(
+                corr_matrix,
+                cmap="coolwarm",
+                vmin=-1,
+                vmax=1,
+                square=True,
+                cbar_kws={"label": "Correlation"},
+                xticklabels=True,
+                yticklabels=True
+            )
+            plt.title(f"Flooded Area Correlation Between Basins - Event {ev}", fontsize=16)
+            plt.xticks(rotation=90)
+            plt.yticks(rotation=0)
+            plt.tight_layout()
+
+            filename = os.path.join(corr_dir, f"event_{ev}_basin_area_corr.png")
+            plt.savefig(filename, dpi=300)
+            plt.close()
+
+        print(f"Saved basin correlation matrices per event in: {corr_dir}")
+
+
 
 def link_event_op_haz(events, haz_op):
     # Link event OPs to HAZ (drop OPs which are not linked)
