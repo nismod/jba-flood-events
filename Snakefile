@@ -27,13 +27,38 @@ rule clip_exposed_asset_to_HAZ:
         echo {input.gpkg}
         touch {output.exposed}
         """
-rule clip_exposed_asset_to_grid:
+rule clip_defended_areas_to_HAZ:
+    """
+    exposure clipped to HAZ polygon
+    """
+    input:
+        defended_areas="processed/defended_areas/defended.gpkg",
+        haz="processed/basins/haz_500.gpkg",
+    output:
+        defended_areas="processed/event_depths/{HAZ}/exposure/defended_areas.geoparquet"
+  
+rule associate_standard_of_protection:
+    """
+    exposure with standard_of_protection column
+    """
+    input:
+        geoparquet="processed/event_depths/{HAZ}/exposure/africa_railways_network.geoparquet",
+        defended="processed/event_depths/{HAZ}/exposure/defended_areas.geoparquet"
+    output:
+        geoparquet="processed/event_depths/{HAZ}/exposure/africa_railways_network_defended.geoparquet"
+    shell:
+        """
+        echo {input.geoparquet}
+        echo {input.soc_csv}
+        touch {output.geoparquet}
+        """
+rule split_exposed_asset_to_grid:
     """
     exposure clipped to HAZ polygon, and split on local (event) grid
     """
     input:
         gpkg="processed/event_depths/{HAZ}/hazard/flrf_ud_Q{RP}.tif",
-        geoparquet="processed/event_depths/{HAZ}/exposure/africa_railways_network.geoparquet"
+        geoparquet="processed/event_depths/{HAZ}/exposure/africa_railways_network_defended.geoparquet"
     output:
         exposed="processed/event_depths/{HAZ}/exposure/africa_railways_network_split.geoparquet"
     shell:
@@ -49,7 +74,10 @@ rule interpolate_depths:
     csv2:lat lon of OPs
     """
     input: 
-        tiff="processed/event_depths/{HAZ}/hazard/flrf_ud_Q{RP}.tif",
+        rp20="processed/event_depths/{HAZ}/hazard/flrf_ud_Q20.tif",
+        rp50="processed/event_depths/{HAZ}/hazard/flrf_ud_Q50.tif",
+        rp100="processed/event_depths/{HAZ}/hazard/flrf_ud_Q100.tif",
+        rp200="processed/event_depths/{HAZ}/hazard/flrf_ud_Q200.tif",
         csv1="processed/events/ObsEventRp.csv",
         csv2="processed/events/RiverOpInfo.csv"
     output:
@@ -62,12 +90,19 @@ rule interpolate_depths:
         echo {input.csv2}
         touch {output}
         """
-rule associate_depths_to_exposure:
+rule interpolate_depths_for_exposure:
     """
     exposure, split on local grid, with event_depth column
+
+    output depth column is effective flood depth, reduced according to protection standard
     """
     input:
-        tiff="processed/event_depths/{HAZ}/{EVENT}/depth.tif",
+        rp20="processed/event_depths/{HAZ}/hazard/flrf_ud_Q20.tif",
+        rp50="processed/event_depths/{HAZ}/hazard/flrf_ud_Q50.tif",
+        rp100="processed/event_depths/{HAZ}/hazard/flrf_ud_Q100.tif",
+        rp200="processed/event_depths/{HAZ}/hazard/flrf_ud_Q200.tif",
+        csv1="processed/events/ObsEventRp.csv",
+        csv2="processed/events/RiverOpInfo.csv"
         geoparquet="processed/event_depths/{HAZ}/exposure/africa_railways_network_split.geoparquet"
     output: 
         geoparquet="processed/event_depths/{HAZ}/{EVENT}/africa_railways_network_split_depth.geoparquet"
