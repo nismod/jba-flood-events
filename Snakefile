@@ -29,7 +29,7 @@ rule clip_exposed_asset_to_HAZ:
         """
 rule clip_defended_areas_to_HAZ:
     """
-    exposure clipped to HAZ polygon
+    exposure clipped to defended areas polygon
     """
     input:
         defended_areas="processed/defended_areas/defended.gpkg",
