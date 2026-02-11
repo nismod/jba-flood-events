@@ -27,6 +27,7 @@ def main(config):
     output_defended = os.path.join(output, "defended_areas")
     output_events = os.path.join(output, "events")
    
+    target_crs = "EPSG:4326" # WGS 84
 
     defended_files = glob.glob(
         os.path.join(incoming_defended, "**", "*.shp"),
@@ -34,7 +35,7 @@ def main(config):
     )
     if not defended_files:
             return pd.Series([np.nan, np.nan, np.nan, np.nan])
-    dfs_defended = [gpd.read_file(f) for f in defended_files]
+    dfs_defended = [gpd.read_file(f).to_crs(target_crs) for f in defended_files]
     data_defended = pd.concat(dfs_defended, ignore_index=True)
     data_defended.to_file(os.path.join(output_defended, "defended_areas.gpkg"), driver="GPKG")
     
