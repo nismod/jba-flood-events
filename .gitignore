@@ -120,6 +120,10 @@ venv.bak/
 # VSCode project settings
 .vscode/
 
+# Editor config
+config.json
+submit_combined.sh
+
 # mkdocs documentation
 /site
 
