@@ -35,6 +35,7 @@ def main(config):
     )
     if not defended_files:
             return pd.Series([np.nan, np.nan, np.nan, np.nan])
+    print("Found", len(defended_files), "files")
     dfs_defended = [gpd.read_file(f).to_crs(target_crs) for f in defended_files]
     data_defended = pd.concat(dfs_defended, ignore_index=True)
     data_defended.to_file(os.path.join(output_defended, "defended_areas.gpkg"), driver="GPKG")
@@ -62,7 +63,7 @@ def main(config):
     
 
     event_files_info = glob.glob(
-        os.path.join(incoming_eventset, "**", "RiverOpInfo.csv"),
+        os.path.join(incoming_eventset, "**", "RiverOpInfo_*.csv"),
         recursive=True
     )
     if not event_files_info:
