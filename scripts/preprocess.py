@@ -38,7 +38,7 @@ def main(config):
     print("Found", len(defended_files), "files")
     dfs_defended = [gpd.read_file(f).to_crs(target_crs) for f in defended_files]
     data_defended = pd.concat(dfs_defended, ignore_index=True)
-    data_defended = data_defended.drop(columns=["fid","SHAPE_Leng", "SHAPE_Area"], errors="ignore")
+    data_defended = data_defended.drop(columns=["fid","SHAPE_Leng", "SHAPE_Area","Rel_date"], errors="ignore")
 
     data_defended.to_file(os.path.join(output_defended, "defended_areas.gpkg"), driver="GPKG")
     
