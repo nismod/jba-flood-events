@@ -1,32 +1,32 @@
+import geopandas as gpd
+gdf = gpd.read_file("processed/basins/haz_500.gpkg")
+HAZ = gdf["T500_ID"].astype(str).tolist()
+RP = [20, 50, 100, 200, 500, 1500]
+asset = ["railways", "roads", "iww", "airports", "maritime"]
+
 rule clip_hazard_to_HAZ:
     """Crop hazard map to HAZ bbox
     """
     input:
         tiff="processed/hazard/flrf_ud_Q{RP}.tif",
-        gpkg="processed/basins/haz_500.gpkg",
+        gpkg="processed/basins/haz_500.gpkg"
     output:
         tiff="processed/event_depths/{HAZ}/hazard/flrf_ud_Q{RP}.tif"
-    shell:
-        """
-        echo {input.tiff}
-        echo {input.gpkg}
-        touch {output.tiff}
-        """
+    script:
+        "scripts/workflow/intersections_HAZ_hazard.py"
+
 rule clip_exposed_asset_to_HAZ:
     """
     exposure clipped to HAZ polygon
     """
     input:
         gpkg="processed/basins/haz_500.gpkg",
-        geoparquet="processed/exposure/africa_railways_network.geoparquet"
+        asset_geoparquet="processed/exposure/africa_{asset}_network.geoparquet"
     output:
-        exposed="processed/event_depths/{HAZ}/exposure/africa_railways_network.geoparquet"
-    shell:
-        """
-        echo {input.geoparquet}
-        echo {input.gpkg}
-        touch {output.exposed}
-        """
+        exposed="processed/event_depths/{HAZ}/exposure/africa_{asset}_network.geoparquet"
+    script:
+        "scripts/workflow/intersections_HAZ_asset.py"
+
 rule clip_defended_areas_to_HAZ:
     """
     exposure clipped to defended areas polygon
@@ -36,6 +36,9 @@ rule clip_defended_areas_to_HAZ:
         haz="processed/basins/haz_500.gpkg",
     output:
         defended_areas="processed/event_depths/{HAZ}/exposure/defended_areas.geoparquet"
+    
+    script:
+        "scripts/workflow/intersections_HAZ_defended.py"
   
 rule associate_standard_of_protection:
     """
@@ -58,9 +61,9 @@ rule split_exposed_asset_to_grid:
     """
     input:
         gpkg="processed/event_depths/{HAZ}/hazard/flrf_ud_Q{RP}.tif",
-        geoparquet="processed/event_depths/{HAZ}/exposure/africa_railways_network_defended.geoparquet"
+        geoparquet="processed/event_depths/{HAZ}/exposure/africa_{asset}_network_defended.geoparquet"
     output:
-        exposed="processed/event_depths/{HAZ}/exposure/africa_railways_network_split.geoparquet"
+        exposed="processed/event_depths/{HAZ}/exposure/africa_{asset}_network_split.geoparquet"
     shell:
         """
         echo {input.geoparquet}
