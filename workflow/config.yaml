@@ -1,0 +1,8 @@
+
+paths:
+    incoming_data: "C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/incoming_data"
+    data: "C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/processed_data"
+    figures: "C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/figures"
+    results: "C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/results"
+
+
