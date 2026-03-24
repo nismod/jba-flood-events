@@ -4,9 +4,99 @@ configfile: "workflow/config.yaml"
 # gdf = gpd.read_file(config["paths"]["data"] + "/basins/haz_500.gpkg")
 # HAZs = gdf["T500_ID"].astype(str).tolist()
 RPs = [20, 50, 100, 200, 500, 1500]
-ASSET_CLASSES = ["railways", "roads", "iww", "airports", "maritime"]
+ASSET_CLASSES = ["railway", "road", "iww", "airports", "maritime"]
 asset_geoms = ["edges", "nodes", "polygons"]
 # HAZ = "500_13_19495"  # For testing; replace with wildcard in rules
+
+rule clip_def_to_HAZ:
+    """Defended areas clipped to HAZ polygon
+
+    To run:
+        snakemake -c1 C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_19495/defended_areas_prova.geoparquet
+    """
+    input:
+        script="workflow/scripts/clip_def_to_HAZ_prova.py",
+        defended_areas=config["paths"]["data"] + "/defended_areas/defended_areas.gpkg",
+        gpkg=config["paths"]["data"] + "/basins/haz_500.gpkg"
+    output:
+        defended_clipped=config["paths"]["data"] + "/event_depths/{HAZ}/defended_areas_prova.geoparquet"
+    shell:
+        # echo {input.rp_tiff}
+        # echo {input.asset_geoparquet}
+        # output_path=$(dirname {output.defended_clipped})
+        """
+        python {input.script} \
+            --haz_id {wildcards.HAZ} \
+            --haz_path {input.gpkg} \
+            --defended_areas_path {input.defended_areas} \
+            --output_path {output.defended_clipped}
+        """
+rule clip_rp_to_HAZ:
+    """Crop hazard map to HAZ bbox
+
+    To run:
+        snakemake -c1 ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_19495/flrf_ud_Q500.tif
+    """
+    input:
+        script="workflow/scripts/clip_rp_to_HAZ.py",
+        # rp_tiff=expand(
+        #     config["paths"]["data"] + "/hazards/flrf_ud_Q{RP}.tif",
+        #     RP=RPs
+        # ),
+        rp_tiff=config["paths"]["data"] + "/hazards/flrf_ud_Q{RP}.tif",
+        gpkg=config["paths"]["data"] + "/basins/haz_500.gpkg"
+    output:
+        # rp_clipped=expand(
+        #     config["paths"]["data"] + "/event_depths/{HAZ}/flrf_ud_Q{RP}.tif",
+        #     RP=RPs
+        # )
+        rp_clipped=config["paths"]["data"] + "/event_depths/{HAZ}/flrf_ud_Q{RP}.tif"
+    shell:
+        # echo {input.rp_tiff}
+        # echo {input.asset_geoparquet}
+        """      
+        
+        python {input.script} \
+            --haz_id {wildcards.HAZ} \
+            --haz_path {input.gpkg} \
+            --rp_path {input.rp_tiff} \
+            --output_path {output.rp_clipped}
+        """
+
+rule clip_asset_to_HAZ:
+    """Crop hazard map to HAZ bbox and exposed assets and defended areas clipped to HAZ polygon
+
+    To run:
+        snakemake -c1 ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_19495/road_edges_network.parquet
+    """
+    input:
+        script="workflow/scripts/clip_asset_to_HAZ.py",
+        asset_geoparquet=config["paths"]["data"] + "/infrastructure/africa_{asset}_{geom}_network.parquet",
+        # asset_geoparquet=expand(
+        #     config["paths"]["data"] + "/infrastructure/africa_{asset}_{geom}_network.geoparquet",
+        #     asset=ASSET_CLASSES,
+        #     geom=asset_geoms
+        # )
+        gpkg=config["paths"]["data"] + "/basins/haz_500.gpkg"
+    output:
+        exposed_clipped=config["paths"]["data"] + "/event_depths/{HAZ}/{asset}_{geom}_network.geoparquet",
+        # exposed_clipped=expand(
+        #     config["paths"]["data"] + "/event_depths/{{HAZ}}/africa_{asset}_{geom}_network.geoparquet",
+        #     asset=ASSET_CLASSES,
+        #     geom=asset_geoms
+        # ),
+        
+    shell:
+        # echo {input.rp_tiff}
+        # echo {input.asset_geoparquet}
+        """
+        python {input.script} \
+            --haz_id {wildcards.HAZ} \
+            --haz_path {input.gpkg} \
+            --asset_path {input.asset_geoparquet} \
+            --output_path {output.exposed_clipped}
+        """
+
 
 rule clip_to_HAZ:
     """Crop hazard map to HAZ bbox and exposed assets and defended areas clipped to HAZ polygon
@@ -15,7 +105,7 @@ rule clip_to_HAZ:
         snakemake -c1 ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_19495/defended_areas.geoparquet
     """
     input:
-        script="workflow/scripts/clip_to_HAZ.py",
+        script="workflow/scripts/clip_rp_to_HAZ.py",
         # rp_tiff=expand(
         #     config["paths"]["data"] + "/hazards/flrf_ud_Q{RP}.tif",
         #     RP=RPs
