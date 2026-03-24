@@ -32,9 +32,10 @@ from shapely.geometry import Polygon
 @click.option(
     "--output_path",
     required=True,
-    type=click.Path(exists=False, dir_okay=True, file_okay=False, writable=True),
-    help="Path to clipped output directory",
+    type=click.Path(exists=False, dir_okay=False, file_okay=True, writable=True),
+    help="Path to clipped output file",
 )
+
 def main(haz_id, haz_path, asset_path, output_path):
     """
     Example usage:
@@ -42,42 +43,31 @@ def main(haz_id, haz_path, asset_path, output_path):
         python workflow/scripts/clip_asset_to_HAZ.py \
             --haz_id 500_13_19495 \
             --haz_path ~/Desktop/DataFolders/JBA_flooding/processed_data/basins/haz_500.gpkg \
-            --asset_path ~/Desktop/DataFolders/JBA_flooding/processed_data/infrastructure/africa_road_edges_network.parquet \
-            --output_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_19495/
+            --asset_path ~/Desktop/DataFolders/JBA_flooding/processed_data/infrastructure/africa_road_edges_network.geoparquet \
+            --output_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_19495/road_edges_network.geoparquet
     """
-    os.makedirs(output_path, exist_ok=True)
+    
     crs = "EPSG:4326"
     HAZ = gpd.read_file(haz_path)
     HAZ = HAZ[HAZ["T500_ID"].astype(str) == haz_id] 
 
     # upload input data
-    # hazard = riox.open_rasterio(input.rp_tiff)
     asset = gpd.read_parquet(asset_path)
-    # hazard = riox.open_rasterio(rp_path)
-    # defended = gpd.read_file(defended_areas_path)
-    
+   
     # ensure they have same crs
-    # hazard = hazard.rio.reproject(crs)
+    
     asset = asset.to_crs(crs)
     HAZ = HAZ.to_crs(crs)
-    #defended = defended.to_crs(crs) 
+  
     
-    # clip hazard, asset and defended areas to HAZ
-
-    # rp_clipped = hazard.rio.clip(
-    #     HAZ.geometry,
-    #     HAZ.crs,
-    #     drop=True
-    # )
+    # clip to HAZ
     asset_clipped = gpd.clip(asset, HAZ)
-    #defended_clipped = gpd.clip(defended, HAZ)
+
     
     # save outputs
     
-    # rp_clipped.rio.to_raster(output.rp_clipped)
-    # asset_clipped.to_parquet(output.exposed_clipped)
     if len(asset_clipped) > 0:
-        asset_clipped.to_parquet(output_path+"road_edges_network.parquet")
+        asset_clipped.to_parquet(output_path)
         logging.info("Clipped asset data saved.")
     else:
         logging.info("No intersection found; no file created.")

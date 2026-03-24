@@ -24,10 +24,10 @@ from shapely.geometry import Polygon
     help="Path to HAZ GeoPackage",
 )
 @click.option(
-    "--rp_path",
+    "--defended_areas_path",
     required=True,
     type=click.Path(exists=True, dir_okay=False, file_okay=True, readable=True),
-    help="Path to RP TIFF",
+    help="Path to defended areas Geoparquet",
 )
 @click.option(
     "--output_path",
@@ -36,42 +36,39 @@ from shapely.geometry import Polygon
     help="Path to clipped output file",
 )
 
-def main(haz_id, haz_path, rp_path, output_path):
+def main(haz_id, haz_path , defended_areas_path , output_path):
     """
     Example usage:
 
-        python workflow/scripts/clip_rp_to_HAZ.py \
+        python workflow/scripts/clip_to_HAZ.py \
             --haz_id 500_13_19495 \
             --haz_path ~/Desktop/DataFolders/JBA_flooding/processed_data/basins/haz_500.gpkg \
-            --rp_path ~/Desktop/DataFolders/JBA_flooding/processed_data/hazards/flrf_ud_Q*.tif \
-            --output_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_19495/flrf_ud_Q*.tif
+            --defended_areas_path ~/Desktop/DataFolders/JBA_flooding/processed_data/defended_areas/defended_areas.gpkg \
+            --output_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_19495/defended_areas_prova.gpkg
     """
-
+    # os.makedirs(os.path.dirname(output_path), exist_ok=True)
     crs = "EPSG:4326"
     HAZ = gpd.read_file(haz_path)
     HAZ = HAZ[HAZ["T500_ID"].astype(str) == haz_id] 
 
     # upload input data
     
-    hazard = riox.open_rasterio(rp_path)
+    defended = gpd.read_file(defended_areas_path)
     
     # ensure they have same crs
-    hazard = hazard.rio.reproject(crs)
-    HAZ = HAZ.to_crs(crs)
     
+    HAZ = HAZ.to_crs(crs)
+    defended = defended.to_crs(crs) 
     
     # clip to HAZ
-    rp_clipped = hazard.rio.clip(
-        HAZ.geometry,
-        HAZ.crs,
-        drop=True
-    )
+
+    defended_clipped = gpd.clip(defended, HAZ)
     
     # save outputs
     
-    if len(rp_clipped) > 0:
-        rp_clipped.rio.to_raster(output_path)
-        logging.info("Clipped RP raster saved.")
+    if len(defended_clipped) > 0:
+        defended_clipped.to_parquet(output_path)
+        logging.info("Clipped defended areas saved.")
     else:
         logging.info("No intersection found; no file created.")
 
