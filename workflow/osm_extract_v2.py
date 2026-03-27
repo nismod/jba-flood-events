@@ -24,15 +24,19 @@ def load_config():
 def main(config):
     incoming_data_path = config['paths']['incoming_data']
     processed_data_path = config['paths']['data']
+    # in_path = os.path.join(incoming_data_path,"osm", "tanzania-260325.osm.pbf")
     in_path = os.path.join(incoming_data_path,"osm", "africa-260219.osm.pbf")
-    out_path = os.path.join(incoming_data_path,"infrastructure","africa_ports.parquet")
+    out_path = os.path.join(incoming_data_path,"infrastructure","africa_osm_inland_ports2.parquet")
 
     qo.convert_pbf_to_parquet(
         # pbf_path='../datasets/OSM/raw/africa-latest.osm.pbf',
         pbf_path=in_path,
         result_file_path=out_path,
         tags_filter={
-                "landuse": ["port"],
+                "landuse": ["industrial"],
+                "industrial": ["port"],
+                #"type": ["inland_port"],
+                "port:type" : ["inland_port"],
             },
             explode_tags=False,
         )
