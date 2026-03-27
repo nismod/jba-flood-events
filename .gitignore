@@ -145,6 +145,7 @@ bak/*
 *.tar.gz
 *.tar.xz
 *.tif
+config.json
 
 # Work in progress
 workflow/scripts/old
