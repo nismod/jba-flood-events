@@ -138,12 +138,16 @@ dmypy.json
 # Data
 outputs/*
 inputs/*
+workflow/files
 bak/*
 *.qgz
 *.xz
 *.tar.gz
 *.tar.xz
 *.tif
+
+# Work in progress
+workflow/scripts/old
 
 # Snakemake
 .snakemake
