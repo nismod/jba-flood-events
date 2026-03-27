@@ -11,25 +11,28 @@ from direct_damages import intersections
 from direct_damages import naming
 
 
-ASSET_COLS = ["id", "asset_type", "geometry"]
 
+@click.command()
+@click.version_option("1.0")
 
-# def make_damage_function(df:pd.DataFrame, suffix="mean"):
-#     hazard_intensity, damage_fraction = (
-#         df["intensity"],
-#         df["damage_fraction" + "_" + suffix],
-#     )
-#     # assuming damage_fraction is sorted by intensity
-#     lower = damage_fraction.iloc[0]
-#     upper = damage_fraction.iloc[-1]
-#     return interp1d(
-#         hazard_intensity,
-#         damage_fraction,
-#         kind="linear",
-#         fill_value=(lower, upper),
-#         bounds_error=False,
-#     )
-
+@click.option(
+    "--rp_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, file_okay=True, readable=True),
+    help="Path to 1in1500 RP TIFF",
+)
+@click.option(
+    "--asset_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, file_okay=True, readable=True),
+    help="Path to asset geoparquet",
+)
+@click.option(
+    "--output_path",
+    required=True,
+    type=click.Path(exists=False, dir_okay=False, file_okay=True, writable=True),
+    help="Path to exposed asset output file",
+)
 
 def check_geoms(vector:gpd.GeoDataFrame):
     if vector.empty:
