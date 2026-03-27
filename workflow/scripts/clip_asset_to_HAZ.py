@@ -26,7 +26,7 @@ from shapely.geometry import Polygon
 @click.option(
     "--asset_path",
     required=True,
-    type=click.Path(exists=True, dir_okay=False, file_okay=True, readable=True),
+    type=click.Path(exists=False, dir_okay=False, file_okay=True, readable=True),  # Changed exists=True to exists=False
     help="Path to asset GeoParquet",
 )
 @click.option(
@@ -46,6 +46,12 @@ def main(haz_id, haz_path, asset_path, output_path):
             --asset_path ~/Desktop/DataFolders/JBA_flooding/processed_data/infrastructure/africa_road_edges_network.geoparquet \
             --output_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_19495/road_edges_network.geoparquet
     """
+    # Check if the asset file exists; if not, create an empty output and skip
+    if not os.path.exists(asset_path):
+        logging.info(f"Asset file {asset_path} does not exist; creating empty output and skipping.")
+        empty_gdf = gpd.GeoDataFrame([], geometry=[], crs="EPSG:4326")  # Empty GeoDataFrame with CRS
+        empty_gdf.to_parquet(output_path)
+        return
     
     crs = "EPSG:4326"
     HAZ = gpd.read_file(haz_path)
@@ -66,13 +72,18 @@ def main(haz_id, haz_path, asset_path, output_path):
     
     # save outputs
     
+
     if len(asset_clipped) > 0:
         asset_clipped.to_parquet(output_path)
+        
         logging.info("Clipped asset data saved.")
     else:
-        logging.info("No intersection found; no file created.")
-
-    logging.info("Done.")
+        logging.info("No intersection found; saving empty output.")
+        # Create and save an empty GeoDataFrame to satisfy Snakemake
+        empty_gdf = gpd.GeoDataFrame([], geometry=[], crs=crs)
+        empty_gdf.to_parquet(output_path)
+        
+        logging.info("Done.")
 
 
 

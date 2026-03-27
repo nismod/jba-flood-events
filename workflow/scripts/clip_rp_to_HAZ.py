@@ -69,13 +69,14 @@ def main(haz_id, haz_path, rp_path, output_path):
     
     # save outputs
     
-    if len(rp_clipped) > 0:
-        rp_clipped.rio.to_raster(output_path)
-        logging.info("Clipped RP raster saved.")
+    if rp_clipped.size == 0 or np.isnan(rp_clipped).all():
+        logging.info("No data after clipping; saving empty raster.")
+        empty = rp_tiff.copy()
+        empty[:] = np.nan
+        empty.rio.to_raster(output_path)
     else:
-        logging.info("No intersection found; no file created.")
-
-    logging.info("Done.")
+        rp_clipped.rio.to_raster(output_path)
+        logging.info("Raster clipped and saved.")
 
 
 

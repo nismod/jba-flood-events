@@ -32,10 +32,11 @@ from shapely.geometry import Polygon
 @click.option(
     "--output_path",
     required=True,
-    type=click.Path(exists=False, dir_okay=True, file_okay=False, writable=True),
-    help="Path to clipped output directory",
+    type=click.Path(exists=False, dir_okay=False, file_okay=True, writable=True),
+    help="Path to clipped output file",
 )
-def main(haz_id, haz_path, defended_areas_path, output_path):
+
+def main(haz_id, haz_path , defended_areas_path , output_path):
     """
     Example usage:
 
@@ -43,45 +44,39 @@ def main(haz_id, haz_path, defended_areas_path, output_path):
             --haz_id 500_13_19495 \
             --haz_path ~/Desktop/DataFolders/JBA_flooding/processed_data/basins/haz_500.gpkg \
             --defended_areas_path ~/Desktop/DataFolders/JBA_flooding/processed_data/defended_areas/defended_areas.gpkg \
-            --output_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_19495/
+            --output_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_19495/defended_areas_prova.gpkg
     """
-    os.makedirs(output_path, exist_ok=True)
+    # os.makedirs(os.path.dirname(output_path), exist_ok=True)
     crs = "EPSG:4326"
     HAZ = gpd.read_file(haz_path)
     HAZ = HAZ[HAZ["T500_ID"].astype(str) == haz_id] 
 
     # upload input data
-    # hazard = riox.open_rasterio(input.rp_tiff)
-    # asset = gpd.read_parquet(input.asset_geoparquet)
+    
     defended = gpd.read_file(defended_areas_path)
     
     # ensure they have same crs
-    # hazard = hazard.rio.reproject(crs)
-    # asset = asset.to_crs(crs)
+    
     HAZ = HAZ.to_crs(crs)
     defended = defended.to_crs(crs) 
     
-    # clip hazard, asset and defended areas to HAZ
+    # clip to HAZ
 
-    # rp_clipped = hazard.rio.clip(
-    #     HAZ.geometry,
-    #     HAZ.crs,
-    #     drop=True
-    # )
-    # asset_clipped = gpd.clip(asset, HAZ)
     defended_clipped = gpd.clip(defended, HAZ)
     
     # save outputs
     
-    # rp_clipped.rio.to_raster(output.rp_clipped)
-    # asset_clipped.to_parquet(output.exposed_clipped)
     if len(defended_clipped) > 0:
-        defended_clipped.to_parquet(output_path + "defended_areas.geoparquet")
+        defended_clipped.to_parquet(output_path)
+    
         logging.info("Clipped defended areas saved.")
+    
     else:
-        logging.info("No intersection found; no file created.")
-
-    logging.info("Done.")
+        logging.info("No intersection found; saving empty output.")
+        empty_gdf = gpd.GeoDataFrame([], geometry=[], crs=crs)
+        empty_gdf.to_parquet(output_path)
+        
+        logging.info("Done.")
 
 
 
