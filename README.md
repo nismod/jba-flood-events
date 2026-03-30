@@ -188,3 +188,8 @@ For Jamaica, observed, simulated current and simulated future events run:
 
 The script currently assumes the locations of other files under `./inputs` and
 writes to `./outputs`.
+
+## Acknowledgments
+
+This research received funding from the FCDO Climate Compatible Growth Programme. The views 
+expressed here do not necessarily reflect the UK government's official policies.
