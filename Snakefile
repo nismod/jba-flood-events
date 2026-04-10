@@ -4,11 +4,15 @@ configfile: "workflow/config.yaml"
 gdf = gpd.read_file(config["paths"]["data"] + "/basins/haz_500.gpkg")
 HAZs = gdf["T500_ID"].astype(str).tolist()
 RPs = [20, 50, 100, 200, 500, 1500]
-ASSET_CLASSES = ["railway", "road", "iww", "airports", "maritime"]
+ASSET_CLASSES = ["railway", "road", "iww", "airport", "maritime"]
 asset_geoms = ["edges", "nodes", "polygons"]
 # HAZ = "500_13_19495"  
 
 rule clip_all:  
+    """
+    To run:
+        snakemake clip_all --cores 4 
+    """
     input:
         expand(config["paths"]["data"] + "/event_depths/{HAZ}/defended_areas.geoparquet", HAZ=HAZs),
         expand(config["paths"]["data"] + "/event_depths/{HAZ}/flrf_ud_Q{RP}.tif", HAZ=HAZs, RP=RPs),
@@ -88,12 +92,12 @@ rule clip_asset_to_HAZ:
 
 rule split_exposed_asset_to_grid:
     """
-    Intersect the exposed asset to the one in 1500 return period grid
+    Split the exposed asset to the return period grid (RP1500, any of the RPs should work, as they are all aligned and have same grid)
     To run:
         snakemake -c1 ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_19495/exposed_road_edges_network.geoparquet
     """
     input:
-        script="workflow/scripts/exposed_assets.py",
+        script="workflow/scripts/exposed_assets_to_grid.py",
         tiff=config["paths"]["data"] + "/event_depths/{HAZ}/flrf_ud_Q1500.tif",
         geoparquet=config["paths"]["data"] + "/event_depths/{HAZ}/{asset}_{geom}_network.geoparquet"
     output:
