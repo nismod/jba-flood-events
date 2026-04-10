@@ -1,14 +1,17 @@
+import click
 import os
 import logging
-import numpy as np
 import pandas as pd
 import geopandas as gpd
+from tqdm import tqdm
+from pyproj import Geod
+import pathlib
+import numpy as np
+import tempfile
 import rioxarray as riox
+import rasterio
 
-from scipy.interpolate import interp1d
-
-from direct_damages import intersections
-from direct_damages import naming
+import snail.intersection as snint
 
 
 
@@ -19,7 +22,7 @@ from direct_damages import naming
     "--rp_path",
     required=True,
     type=click.Path(exists=True, dir_okay=False, file_okay=True, readable=True),
-    help="Path to 1in1500 RP TIFF",
+    help="Path to RP TIFF",
 )
 @click.option(
     "--asset_path",
@@ -34,145 +37,138 @@ from direct_damages import naming
     help="Path to exposed asset output file",
 )
 
-def check_geoms(vector:gpd.GeoDataFrame):
-    if vector.empty:
-        raise ValueError("Input vector file is empty, cannot proceed.")
-    geom_type = vector.geometry.geom_type.unique()
-    if len(geom_type) > 1:
-        raise ValueError("Input vector has multiple geometry types: %s", geom_type)
-    assert vector.crs.to_epsg() == 4326, f"Input vector must be in EPSG:4326, not EPSG:{vector.crs.to_epsg()}"
-    logging.debug(f"Invalid geometries: {(~vector.geometry.is_valid).sum()}")
-    logging.debug(f"Empty geometries: {vector.geometry.is_empty.sum()}")
-    logging.debug(f"Null geometries: {vector.geometry.isna().sum()}")
-    return geom_type[0]
 
 
-# def make_dummy_damage_df(hazard, asset_type):
-#     logging.warning(f"No damage curve found for hazard {hazard} and asset type {asset_type}. Assuming zero damage.")
-#     return pd.DataFrame({
-#         "intensity": [0.0, 1.0],
-#         "damage_fraction_min": [0.0, float("nan")],
-#         "damage_fraction_mean": [0.0, float("nan")],
-#         "damage_fraction_max": [0.0, float("nan")],
-#     }, dtype=float)
+def main(rp_path, asset_path, output_path):
+    """
+    Example usage:
 
+        python workflow/scripts/exposed_assets_to_grid.py \
+            --rp_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/flrf_ud_Q1500.tif \
+            --asset_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/maritime_polygons_network.geoparquet\
+            --output_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/exposed_maritime_polygons_network.geoparquet
+    """
 
-# def prepare_damage_curves(damage_curve_dir, hazards, asset_types) -> dict:
-#     damage_curves = {}
-#     for hazard in hazards:
-#         damage_curve_hazard_dir = os.path.join(damage_curve_dir, hazard)
-#         for asset_type in asset_types:
-#             damage_curve_path = os.path.join(damage_curve_hazard_dir, f"{asset_type}.csv")
-#             if not os.path.exists(damage_curve_path):
-#                 logging.warning(f"No damage curve found for hazard: {hazard} and asset type: {asset_type}.")
-#                 print(f"WARNING: No damage curve found for hazard: {hazard} and asset type: {asset_type}.")
-#                 damage_df = make_dummy_damage_df(hazard, asset_type)
-#             else:
-#                 damage_df = pd.read_csv(damage_curve_path, comment='#')
-            
-#             damage_curves[(hazard, asset_type)] = {
-#                 suffix: make_damage_function(damage_df, suffix=suffix)
-#                 for suffix in ["min", "mean", "max"]
-#             }
-#     return damage_curves
-
-
-# def prepare_rehab_costs(rehab_cost_dir, hazards) -> dict:
-#     rehab_costs = {}
-#     for hazard in hazards:
-#         rehab_cost_file = os.path.join(rehab_cost_dir, f"{hazard}.csv")
-#         rehab_cost_df = pd.read_csv(rehab_cost_file, comment='#')
-#         rehab_cost_df = rehab_cost_df.set_index("asset_type", drop=True)
-#         rehab_costs[hazard] = rehab_cost_df
-#     return rehab_costs
-
-
-# def prepare_design_standards(protection_dir, hazards) -> dict:
-#     design_standards = {}
-#     for hazard in hazards:
-#         logging.info(f"\nLoading design standards for hazard: {hazard}")
-#         design_standards[hazard] = pd.read_csv(
-#             os.path.join(protection_dir, f"{hazard}.csv"), comment='#'
-#         ).set_index("asset_type", drop=True)
-#         logging.info(f"Loaded: {os.path.join(protection_dir, f'{hazard}.csv')}")
-#     return design_standards
-
-
-# def get_rasters(hazard_dir:list[str]) -> list[str]:
-#     """Filter out non-tif files from the input raster list"""
-#     rasters = os.listdir(hazard_dir)
-#     filtered_rasters = [r for r in rasters if r.endswith('.tif') and not r.startswith('_')]
-#     filtered_rasters = [os.path.join(hazard_dir, r) for r in filtered_rasters]
-#     if not filtered_rasters:
-#         raise ValueError("No valid .tif raster files found in input.")
-#     logging.info(f"Found {len(filtered_rasters)} valid raster files.")
-#     return filtered_rasters
-
-
-# def separate_hazards(vector: gpd.GeoDataFrame) -> dict[str, gpd.GeoDataFrame]:
-#     base_cols = ['id', 'asset_type', 'unit', 'unit_type', 'geometry']
-#     prefixes = ('hazard-', 'damage-', 'cost-')
+    logging.info("Reading raster and asset data...")
     
-#     hazard_cols = [col for col in vector.columns if col.startswith(prefixes)]
-#     hazards = {naming.get_hazard_from_colname(col) for col in hazard_cols}
+
+    # upload input data
+
+    crs = "EPSG:4326"
+    vector = gpd.read_parquet(asset_path)
+    vector = vector.to_crs(crs)
+    print("vector types:", vector.geometry.geom_type.value_counts().to_dict())
+
+    # Check for invalid/null geometries
+    print("Total rows:", len(vector))
+    print("Null geometries:", vector.geometry.isna().sum())
+    print("Invalid geometries:", (~vector.geometry.is_valid).sum())
+    print(vector.total_bounds)
     
-#     hazard_vectors = {}
-#     for hazard in hazards:
-#         cols = base_cols + [col for col in hazard_cols if naming.get_hazard_from_colname(col) == hazard]
-#         hazard_vectors[hazard] = vector[cols].copy()
+
+    grid, window = process_raster_grid([rp_path], vector)
+
+    # first feature geometry
+    geom = vector.geometry.iat[0]
+
     
-#     return hazard_vectors
-
-
-def main(input, output, params):
-    asset_file = input.geoparquet
-    vector = gpd.read_parquet(asset_file, columns=ASSET_COLS)
-
-    if vector.empty:
-        vector.to_parquet(output.exposed)
-        logging.info("Input asset file is empty, saved empty output.")
-        return
-
-    geom_type = check_geoms(vector)
-
-    raster = riox.open_rasterio(input.tiff)
-
-    _ = intersections.process_raster_grid(raster, vector, verify_consistency=True)
-
-    asset_types = list(vector["asset_type"].unique())
-
-
-    if geom_type in ["Point", "MultiPoint"]:
-        vector = intersections.points.intersect(
-            vector, raster, damage_curves, rehab_costs, design_standards,
-            splits_path=params.splits_path
-        )
-    elif geom_type in ["LineString", "MultiLineString"]:
-        vector = intersections.linestrings.intersect(
-            vector, raster, damage_curves, rehab_costs, design_standards,
-            splits_path=params.splits_path
-        )
-    elif geom_type in ["Polygon", "MultiPolygon"]:
-        vector = intersections.polygons.intersect(
-            vector, raster, damage_curves, rehab_costs, design_standards,
-            splits_path=params.splits_path)
-    else:
-        raise ValueError(f"Unknown geometry type {geom_type}.")
+    
+    # type if one feature
+    if geom.geom_type == "Point":
         
-    vector.to_parquet(output.exposed)
+        logging.info("Processing point geometries...")
+        
+        vector = vector.reset_index(drop=True)
+        vector_splits = vector.copy()  # No splitting needed for points
+
+        logging.info("Finding indices...")
+        vector_splits = snint.apply_indices(
+            vector_splits, grid, index_i="raster_i", index_j="raster_j"
+        )
+
+
+    elif geom.geom_type == "LineString":
+            
+        logging.info("Splitting edges...")
+        vector = snint.prepare_linestrings(vector)
+        vector = vector.reset_index(drop=True)
+        vector_splits = snint.split_linestrings(vector, grid)
+        logging.info("Split %d edges into %d pieces", len(vector), len(vector_splits))
+    
+
+        logging.info("Finding indices...")
+        vector_splits = snint.apply_indices(
+            vector_splits, grid, index_i="raster_i", index_j="raster_j"
+        )
+
+    elif geom.geom_type == "Polygon":
+        
+        logging.info("Splitting polygons...")
+        vector = vector.reset_index(drop=True)
+        vector_splits = snint.split_polygons(vector, grid)
+        logging.info("Split %d polygons into %d pieces", len(vector), len(vector_splits))
+    
+
+        logging.info("Finding indices...")
+        vector_splits = snint.apply_indices(
+            vector_splits, grid, index_i="raster_i", index_j="raster_j"
+        )
+
+    vector_splits.to_parquet(output_path)
 
     logging.info("Done.")
 
 
+def grid_from_window(raster_file, bounds, verbose=False) -> snint.GridDefinition:
+    """Create a snint.GridDefinition.from_raster for window defined by bounds."""
+    with rasterio.open(raster_file) as src:
+        window = rasterio.windows.from_bounds(
+            bounds[0], bounds[1], bounds[2], bounds[3],
+            transform=src.transform
+        ).round()
+        logging.info(f"Computed window from bounds: {window}")
+        window_transform = rasterio.windows.transform(window, src.transform)
+
+    grid = snint.GridDefinition(
+        width=int(window.width),
+        height=int(window.height),
+        transform=window_transform,
+        crs=src.crs.to_string()
+    )
+    return grid, window
+
+def process_raster_grid(
+        raster_files:list[str], vector:gpd.GeoDataFrame, verify_consistency=False
+        ) -> snint.GridDefinition:
+    """Make a grid for list of rasters, based on vector bounds."""
+    bounds = vector.total_bounds
+    grid, window = grid_from_window(raster_files[0], bounds)
+    logging.info(f"{grid=}")
+
+    if len(raster_files) > 1 and verify_consistency:
+        logging.info("Checking raster grid consistency")
+        for raster_path in raster_files[1:]:
+            other_grid, _ = grid_from_window(raster_path, bounds)
+            if other_grid != grid:
+                raise AttributeError(
+                    (
+                        f"Raster attribute mismatch in file {raster_path}:\n"
+                        f"Height: expected={grid.height}; actual={other_grid.height}\n"
+                        f"Width: expected={grid.width}; actual={other_grid.width}\n"
+                        f"Transform equal? {other_grid.transform == grid.transform}\n"
+                        f"Transform expected= {grid.transform}\n"
+                        f"Transform actual= {other_grid.transform}\n"
+                        f"CRS equal? {other_grid.crs == grid.crs}"
+                    )
+                )
+    
+    return grid, window
+
 if __name__ == "__main__":
 
     logging.basicConfig(
-        filename=snakemake.log[0],
         format="%(asctime)s %(process)d %(filename)s %(message)s",
         level=logging.INFO
     )
 
-    input = snakemake.input
-    output = snakemake.output
-    
-    result = main(input, output, params)
+    main()
