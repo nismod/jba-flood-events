@@ -3,11 +3,22 @@ configfile: "workflow/config.yaml"
 
 gdf = gpd.read_file(config["paths"]["data"] + "/basins/haz_500.gpkg")
 HAZs = gdf["T500_ID"].astype(str).tolist()
+
+ev_id = pd.read_csv(config["paths"]["data"] + "/events/RiverOpInfo.csv")
+EVENTS = ev_id["event.id"].astype(str).unique().tolist()
+
+TYPES = ["Obs", "Sim"] # observed or simulated events
+
 RPs = [20, 50, 100, 200, 500, 1500]
-ASSET_CLASSES = ["railway", "road", "iww", "airport", "maritime"]
+
+ASSET_CLASSES = ["railway", "road", "iww", "airport", "airport_field","airport_terminal", "maritime"]
+
 asset_geoms = ["edges", "nodes", "polygons"]
 # HAZ = "500_13_19495"  
+wildcard_constraints:
+    asset="|".join(ASSET_CLASSES)
 
+        
 rule clip_all:  
     """
     To run:
@@ -66,7 +77,7 @@ rule clip_rp_to_HAZ:
         """
 
 rule clip_asset_to_HAZ:
-    """Crop hazard map to HAZ bbox and exposed assets and defended areas clipped to HAZ polygon
+    """Crop assets to HAZ polygon
 
     To run:
         snakemake -c1 ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_19495/road_edges_network.parquet
@@ -92,43 +103,55 @@ rule clip_asset_to_HAZ:
 
 rule split_exposed_asset_to_grid:
     """
-    Split the exposed asset to the return period grid (RP1500, any of the RPs should work, as they are all aligned and have same grid)
-    To run:
-        snakemake -c1 ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_19495/exposed_road_edges_network.geoparquet
+    Split exposed assets to grid
+
+    To run (have to be in Z drive because of file path length issues with clipped assets):
+    subst Z: "jba_flood_events path, double slashes"
+    cd /z/
+    snakemake all_splits --cores 8 --rerun-incomplete
     """
     input:
         script="workflow/scripts/exposed_assets_to_grid.py",
         tiff=config["paths"]["data"] + "/event_depths/{HAZ}/flrf_ud_Q1500.tif",
-        geoparquet=config["paths"]["data"] + "/event_depths/{HAZ}/{asset}_{geom}_network.geoparquet"
+        asset_geoparquet=config["paths"]["data"] + "/event_depths/{HAZ}/{asset}_{geom}_network.geoparquet"
     output:
-        exposed=config["paths"]["data"] + "/event_depths/{HAZ}/exposed_{asset}_{geom}_network.geoparquet"
+        exposed=config["paths"]["data"] + "/event_depths/{HAZ}/split_{asset}_{geom}_network.geoparquet"
     shell:
-        # echo {input.rp_tiff}
-        # echo {input.asset_geoparquet}
         """
         python {input.script} \
-            --haz_id {wildcards.HAZ} \
             --rp_path {input.tiff} \
-            --asset_path {input.asset_path} \
+            --asset_path {input.asset_geoparquet} \
             --output_path {output.exposed}
         """
+rule all_splits:
+    input:
+        expand(
+            config["paths"]["data"] + "/event_depths/{HAZ}/split_{asset}_{geom}_network.geoparquet",
+            HAZ=HAZs,
+            asset=ASSET_CLASSES,
+            geom=asset_geoms
+        )
 
 
-rule interpolate_depths:
-    """
-    depth_m interpolated for the RP of EVENT, in HAZ
-    csv1:rp by OP by event
-    csv2:lat lon of OPs
-    """
-    input: 
-        gpkg=config["paths"]["data"] + "/basins/haz_500.gpkg",
-        rp=config["paths"]["data"] + "/event_depths/{HAZ}/hazard/",  # Directory containing all RP TIFFs for this HAZ
-        csv1=config["paths"]["data"] + "/events/ObsEventRp.csv",
-        csv2=config["paths"]["data"] + "/events/RiverOpInfo.csv"
+
+checkpoint interpolate_depths:
+    input:
+        script="workflow/scripts/depth_interpolation.py",
+        haz=config["paths"]["data"] + "/basins/haz_500.gpkg",
+        rp_folder=config["paths"]["data"] + "/event_depths/{HAZ}/",
+        csv=config["paths"]["data"] + "/events/{TYPE}EventRp.csv",
+        gpkg=config["paths"]["data"] + "/events/RiverOpInfo.gpkg"
     output:
-        depth=config["paths"]["data"] + "/event_depths/{HAZ}/{EVENT}/depth.tif"
-    script:
-        "workflow/scripts/depth_interpolation.py"
+        outdir=directory(config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Events/")
+    shell:
+        """
+        python {input.script} \
+            --haz_path {input.haz} \
+            --rp_path {input.rp_folder} \
+            --op_path {input.csv} \
+            --info_path {input.gpkg} \
+            --output_path {output.outdir}
+        """
 
 rule interpolate_depths_exposure_def:
     """
