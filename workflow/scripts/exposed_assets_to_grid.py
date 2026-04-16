@@ -10,8 +10,9 @@ import numpy as np
 import tempfile
 import rioxarray as riox
 import rasterio
-
 import snail.intersection as snint
+from shapely.geometry import MultiLineString, MultiPolygon
+import shapely
 
 
 
@@ -57,6 +58,15 @@ def main(rp_path, asset_path, output_path):
     crs = "EPSG:4326"
     vector = gpd.read_parquet(asset_path)
     vector = vector.to_crs(crs)
+    if len(vector) == 0:
+        logging.info("No assets in this HAZ, writing empty file.")
+        vector.to_parquet(output_path)
+        return
+    vector['geometry'] = vector['geometry'].apply(
+            lambda g: shapely.force_2d(g)  # ensure 2D
+        )
+    vector = vector.explode(index_parts=False)  # MultiLineString -> LineString etc.
+    vector = vector.reset_index(drop=True)
     print("vector types:", vector.geometry.geom_type.value_counts().to_dict())
 
     # Check for invalid/null geometries
@@ -65,8 +75,11 @@ def main(rp_path, asset_path, output_path):
     print("Invalid geometries:", (~vector.geometry.is_valid).sum())
     print(vector.total_bounds)
     
+    with rasterio.open(rp_path) as src:
+        bounds = src.bounds
+    
+    grid, window = grid_from_window(rp_path, bounds)
 
-    grid, window = process_raster_grid([rp_path], vector)
 
     # first feature geometry
     geom = vector.geometry.iat[0]
@@ -81,12 +94,6 @@ def main(rp_path, asset_path, output_path):
         vector = vector.reset_index(drop=True)
         vector_splits = vector.copy()  # No splitting needed for points
 
-        logging.info("Finding indices...")
-        vector_splits = snint.apply_indices(
-            vector_splits, grid, index_i="raster_i", index_j="raster_j"
-        )
-
-
     elif geom.geom_type == "LineString":
             
         logging.info("Splitting edges...")
@@ -94,13 +101,7 @@ def main(rp_path, asset_path, output_path):
         vector = vector.reset_index(drop=True)
         vector_splits = snint.split_linestrings(vector, grid)
         logging.info("Split %d edges into %d pieces", len(vector), len(vector_splits))
-    
-
-        logging.info("Finding indices...")
-        vector_splits = snint.apply_indices(
-            vector_splits, grid, index_i="raster_i", index_j="raster_j"
-        )
-
+ 
     elif geom.geom_type == "Polygon":
         
         logging.info("Splitting polygons...")
@@ -108,19 +109,21 @@ def main(rp_path, asset_path, output_path):
         vector_splits = snint.split_polygons(vector, grid)
         logging.info("Split %d polygons into %d pieces", len(vector), len(vector_splits))
     
-
-        logging.info("Finding indices...")
-        vector_splits = snint.apply_indices(
-            vector_splits, grid, index_i="raster_i", index_j="raster_j"
-        )
-
+    else:
+        raise ValueError(f"Unsupported geometry type: {geom.geom_type}")
+    
+    logging.info("Finding indices...")
+    vector_splits = snint.apply_indices(
+        vector_splits, grid, index_i="raster_i", index_j="raster_j"
+    )
     vector_splits.to_parquet(output_path)
 
     logging.info("Done.")
 
 
-def grid_from_window(raster_file, bounds, verbose=False) -> snint.GridDefinition:
-    """Create a snint.GridDefinition.from_raster for window defined by bounds."""
+
+
+def grid_from_window(raster_file, bounds, verbose=False):
     with rasterio.open(raster_file) as src:
         window = rasterio.windows.from_bounds(
             bounds[0], bounds[1], bounds[2], bounds[3],
@@ -128,11 +131,12 @@ def grid_from_window(raster_file, bounds, verbose=False) -> snint.GridDefinition
         ).round()
         logging.info(f"Computed window from bounds: {window}")
         window_transform = rasterio.windows.transform(window, src.transform)
+    transform_6 = tuple(window_transform)[:6]
 
     grid = snint.GridDefinition(
         width=int(window.width),
         height=int(window.height),
-        transform=window_transform,
+        transform=transform_6,
         crs=src.crs.to_string()
     )
     return grid, window
