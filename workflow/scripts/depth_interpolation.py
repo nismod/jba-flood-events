@@ -28,6 +28,7 @@ from tqdm.contrib.concurrent import process_map
 import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
+import snail.intersection as snint
 
 import snakemake  # Add this import at the top if not already present
 
@@ -98,17 +99,24 @@ def main(haz_path, rp_path, op_path, info_path, output_path):
     rp_files = sorted(glob(os.path.join(rp_path, "flrf_ud_Q*.tif")))
     river_rp_points, profile = read_rp_maps_to_points(rp_files) # reads all RP TIFFs in the directory and returns a GeoDataFrame of points with RP values and the raster profile for output
     
+    with rasterio.open(rp_files[1]) as src:
+        bounds = src.bounds
+        
+    grid, window = grid_from_window(rp_files[1], bounds)
     
-
     river_exposure_points = link_haz_ep(
             hydrological_accumulation_zones, river_rp_points
         )
+    river_exposure_points = snint.apply_indices(
+            river_exposure_points, grid, index_i="raster_i", index_j="raster_j"
+        )
+    river_exposure_points.to_parquet(os.path.join((Path(output_path).parent), "exposure_points_prova.parquet"), index=True)
 
     event_set = pd.read_csv(
         op_path, usecols=["event.id", "op.id", "rp"]
     ).set_index(["op.id", "event.id"])
-    
-    
+  
+       
     river_events = link_event_op_haz(event_set, river_haz_op)
     
     
@@ -311,11 +319,14 @@ def event_depths(event_id, event_zones, exposure_points, hazard_prefix, output_d
 
         # Output cells
         # T500_ID, depth, cell_index, event
-        event_points = event_points.reset_index()[["T500_ID", "depth", "cell_index"]]
+        event_points = event_points.reset_index()[["T500_ID", "depth", "cell_index", "raster_i", "raster_j"]]
+
+        
         event_points = event_points[event_points.depth > 0]
         event_points["event"] = event_id
         event_points["hazard"] = hazard_prefix
 
+       
         event_points.to_parquet(
             output_dir, partition_cols=["event"], index=False
         )
@@ -333,7 +344,23 @@ def link_haz_op(haz, ops):
     return pd.concat([haz_within, haz_nearest])
 
 
+def grid_from_window(raster_file, bounds, verbose=False):
+    with rasterio.open(raster_file) as src:
+        window = rasterio.windows.from_bounds(
+            bounds[0], bounds[1], bounds[2], bounds[3],
+            transform=src.transform
+        ).round()
+        logging.info(f"Computed window from bounds: {window}")
+        window_transform = rasterio.windows.transform(window, src.transform)
+    transform_6 = tuple(window_transform)[:6]
 
+    grid = snint.GridDefinition(
+        width=int(window.width),
+        height=int(window.height),
+        transform=transform_6,
+        crs=src.crs.to_string()
+    )
+    return grid, window
 
 if __name__ == "__main__":
 
