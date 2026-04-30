@@ -1,6 +1,3 @@
-from posixpath import dirname
-from unittest.mock import sentinel
-
 import click
 import logging
 import os
@@ -32,37 +29,25 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
 import snail.intersection as snint
+import shapely
 
 import snakemake  
+
 
 @click.command()
 @click.version_option("1.0")
 
 @click.option(
-    "--op_path",
-    required=True,
-    type=click.Path(exists=True, dir_okay=False, file_okay=True, readable=True),
-    help="Path to OP csv",
-)
-@click.option(
-    "--info_path",
-    required=True,
-    type=click.Path(exists=True, dir_okay=False, file_okay=True, readable=True),
-    help="Path to RiverOpInfo csv",
-)
-
-@click.option(
     "--rp_path",
     required=True,
     type=click.Path(exists=True, dir_okay=True, file_okay=False, readable=True),
-    help="Path to folder containing RP TIFFs",
+    help="Path to RP TIFF",
 )
-
 @click.option(
-    "--haz_path",
+    "--defended_path",
     required=True,
     type=click.Path(exists=True, dir_okay=False, file_okay=True, readable=True),
-    help="Path to HAZ GeoPackage",
+    help="Path to defended areas geoparquet",
 )
 @click.option(
     "--asset_path",
@@ -70,95 +55,148 @@ import snakemake
     type=click.Path(exists=True, dir_okay=False, file_okay=True, readable=True),
     help="Path to asset GeoParquet",
 )
-
 @click.option(
     "--output_path",
     required=True,
-    type=click.Path(exists=False, dir_okay=True, file_okay=False, writable=True),
-    help="Path to interpolated event tiff file",
+    type=click.Path(exists=False, dir_okay=False, file_okay=True, writable=True),
+    help="Path to defended areas depths output file",
 )
 
 
-def main(haz_path, rp_path, op_path, info_path, asset_path, output_path):
-    
+
+def main(rp_path, defended_path, asset_path, output_path):
     """
     Example usage:
 
-        python workflow/scripts/depth_interpolation.py \
-            --haz_path ~/Desktop/DataFolders/JBA_flooding/processed_data/basins/haz_500.gpkg \
+        python workflow/scripts/defended_areas_to_grid.py \
             --rp_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/ \
-            --info_path ~/Desktop/DataFolders/JBA_flooding/processed_data/events/RiverOpInfo.gpkg \
-            --op_path ~/Desktop/DataFolders/JBA_flooding/processed_data/events/ObsEventRp.csv \
+            --defended_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/defended_areas.geoparquet\
             --asset_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/split_road_edges_network.geoparquet \
-            --output_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/ObsEvents/Undefended/road_edges
+            --output_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/split_defended_areas/road_edges_network/split_defended_areas.geoparquet
     """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    logging.info("Reading raster and defended areas data...")
     
-    
-    os.makedirs(output_path, exist_ok=True)
+
+    # upload input data
 
     crs = "EPSG:4326"
     haz_id = rp_path.rstrip("/").split("/")[-1]  # Extract HAZ ID from filename, assuming it's the filename without extension
-    hydrological_accumulation_zones = gpd.read_file(haz_path)[["T500_ID", "geometry"]].to_crs(crs)
-    hydrological_accumulation_zones = hydrological_accumulation_zones[hydrological_accumulation_zones["T500_ID"] == haz_id]
+   
 
-    
-    river_ops = gpd.read_file(info_path)[["op.id", "geometry"]].to_crs(crs) 
-    
-    river_haz_op = link_haz_op(hydrological_accumulation_zones, river_ops)
-    river_haz_op = river_haz_op.dropna()
+    vector = gpd.read_parquet(defended_path)
+    vector = vector.to_crs(crs)
+    if len(vector) == 0:
+        logging.info("No defended areas in this HAZ, writing empty file.")
+        vector.to_parquet(output_path)
+        return
+    vector['geometry'] = vector['geometry'].apply(
+            lambda g: shapely.force_2d(g)  # ensure 2D
+        )
+    vector = vector.explode(index_parts=False)  # MultiLineString -> LineString etc.
+    vector = vector.reset_index(drop=True)
+    vector["T500_ID"] = haz_id
+    print("vector types:", vector.geometry.geom_type.value_counts().to_dict())
 
-    # Glob the RP TIFFs from the directory
+    # Check for invalid/null geometries
+    print("Total rows:", len(vector))
+    print("Null geometries:", vector.geometry.isna().sum())
+    print("Invalid geometries:", (~vector.geometry.is_valid).sum())
+    print(vector.total_bounds)
     
-    rp_files = sorted(glob(os.path.join(rp_path, "flrf_ud_Q*.tif")))
-    river_rp_points, profile = read_rp_maps_to_points(rp_files) # reads all RP TIFFs in the directory and returns a GeoDataFrame of points with RP values and the raster profile for output
+    
+    rp_files = sorted(glob(os.path.join(rp_path, "flrf_ud_Q*.tif")))    
+    river_exposure_points, profile = read_rp_maps_to_points(rp_files) # reads all RP TIFFs in the directory and returns a GeoDataFrame of points with RP values and the raster profile for output
     
     with rasterio.open(rp_files[1]) as src:
         bounds = src.bounds
         
     grid, window = grid_from_window(rp_files[1], bounds)
     
-    river_exposure_points = link_haz_ep(
-            hydrological_accumulation_zones, river_rp_points
-        )
     river_exposure_points = snint.apply_indices(
             river_exposure_points, grid, index_i="raster_i", index_j="raster_j"
         )
-    # river_exposure_points.to_parquet(os.path.join((Path(output_path).parent), "exposure_points_prova.parquet"), index=True)
 
-    event_set = pd.read_csv(
-        op_path, usecols=["event.id", "op.id", "rp"]
-    ).set_index(["op.id", "event.id"])
-  
-       
-    river_events = link_event_op_haz(event_set, river_haz_op)
+    river_exposure_points["T500_ID"] = haz_id
+
+    logging.info("Splitting polygons...")
+    vector = vector.reset_index(drop=True)
+    vector_splits = snint.split_polygons(vector, grid)
+    logging.info("Split %d polygons into %d pieces", len(vector), len(vector_splits))
+    
+    logging.info("Finding indices...")
+    vector_splits = snint.apply_indices(
+        vector_splits, grid, index_i="raster_i", index_j="raster_j"
+    )
+    
+    vector_splits.rename(columns={"JBA_SoP": "rp"}, inplace=True)
+    
     asset = gpd.read_parquet(asset_path)
     asset["asset"] = asset_path.split("/")[-1].replace(".geoparquet", "").replace("split_", "")
     
-    
-    
+    output_dir = os.path.dirname(output_path)
+
+
+
+
     interpolate_event_exposure(
-        river_events,
+        vector_splits,
         river_exposure_points,
         hazard_prefix="FLRF",
         asset=asset,
-        output_dir=output_path,
+        output_dir=output_dir,
     )
 
-    sentinel = Path(output_path) / ".done"
-    sentinel.touch()
+    logging.info("Done.")
 
 
 
-def link_haz_op(haz, ops):
-    haz_proj = haz.to_crs("EPSG:3857")
-    ops_proj = ops.to_crs("EPSG:3857")
+
+def grid_from_window(raster_file, bounds, verbose=False):
+    with rasterio.open(raster_file) as src:
+        window = rasterio.windows.from_bounds(
+            bounds[0], bounds[1], bounds[2], bounds[3],
+            transform=src.transform
+        ).round()
+        logging.info(f"Computed window from bounds: {window}")
+        window_transform = rasterio.windows.transform(window, src.transform)
+    transform_6 = tuple(window_transform)[:6]
+
+    grid = snint.GridDefinition(
+        width=int(window.width),
+        height=int(window.height),
+        transform=transform_6,
+        crs=src.crs.to_string()
+    )
+    return grid, window
+
+def process_raster_grid(
+        raster_files:list[str], vector:gpd.GeoDataFrame, verify_consistency=False
+        ) -> snint.GridDefinition:
+    """Make a grid for list of rasters, based on vector bounds."""
+    bounds = vector.total_bounds
+    grid, window = grid_from_window(raster_files[0], bounds)
+    logging.info(f"{grid=}")
+
+    if len(raster_files) > 1 and verify_consistency:
+        logging.info("Checking raster grid consistency")
+        for raster_path in raster_files[1:]:
+            other_grid, _ = grid_from_window(raster_path, bounds)
+            if other_grid != grid:
+                raise AttributeError(
+                    (
+                        f"Raster attribute mismatch in file {raster_path}:\n"
+                        f"Height: expected={grid.height}; actual={other_grid.height}\n"
+                        f"Width: expected={grid.width}; actual={other_grid.width}\n"
+                        f"Transform equal? {other_grid.transform == grid.transform}\n"
+                        f"Transform expected= {grid.transform}\n"
+                        f"Transform actual= {other_grid.transform}\n"
+                        f"CRS equal? {other_grid.crs == grid.crs}"
+                    )
+                )
     
-    haz_within = haz_proj.sjoin(ops_proj, predicate="contains", how="right")[["T500_ID", "op.id"]]
-    
-    haz_remaining = haz_proj[~haz_proj.T500_ID.isin(haz_within.T500_ID.unique())]
-    haz_nearest = haz_remaining.sjoin_nearest(ops_proj, how="left")[["T500_ID", "op.id"]]
-    
-    return pd.concat([haz_within, haz_nearest])
+    return grid, window
 
 def latlon_to_gdf(df, lat_column="lat", lon_column="lon"):
     geometry = gpd.points_from_xy(df[lon_column], df[lat_column])
@@ -260,15 +298,6 @@ def link_haz_ep(haz, eps):
         .set_index("T500_ID")
     )
 
-def link_event_op_haz(events, haz_op):
-    # Link event OPs to HAZ (drop OPs which are not linked)
-    # op.id, event.id, rp, T500_ID
-    events = events.reset_index().merge(haz_op, on="op.id").dropna()
-
-    # Take the geometric mean of Event/OP return periods if multiple OPs per HAZ
-    # (T500_ID, event.id) rp
-    return events.groupby(["event.id", "T500_ID"]).agg({"rp": gmean})
-
 def interpolate_rp_factor(df):
     return (np.log(df.rp) - np.log(df.rp_l)) / (np.log(df.rp_u) - np.log(df.rp_l))
 
@@ -289,39 +318,38 @@ def interpolate_event_exposure(event_zones, exposure_points, hazard_prefix, asse
     event_zones["rp_l"] = RPS[bin_index - 1]
     event_zones["rp_u"] = RPS[bin_index]
     event_zones["rp_factor"] = interpolate_rp_factor(event_zones)
-    # event_zones is now a dataframe with:
-    # (T500_ID, event.id) rp, bin_index, rp_l, rp_u, rp_factor
 
-    event_ids = sorted(event_zones.reset_index()["event.id"].unique())
-    event_depths_partial = partial(
-        event_depths,
+    event_zones["def_id"] = range(len(event_zones))
+    event_ids = sorted(event_zones.reset_index()["def_id"].unique())
+
+    
+    event_depths(
         event_zones=event_zones,
         exposure_points=exposure_points,
         hazard_prefix=hazard_prefix,
         asset=asset,
         output_dir=output_dir,
     )
-    process_map(
-        event_depths_partial,
-        event_ids,
-        chunksize=32,
-        max_workers=int(os.cpu_count() / 2),
-    )
+   
 
 
-def event_depths(event_id, event_zones, exposure_points, hazard_prefix, asset, output_dir):
+def event_depths(event_zones, exposure_points, hazard_prefix, asset, output_dir):
     
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "split_def.geoparquet")
     
-    # Each HAZ in this event, with RP values
-    event_haz = event_zones.loc[event_id].reset_index()
-    # All points for this event, joined with RP values via HAZ
-    event_points = exposure_points.loc[event_haz.T500_ID].join(
-        event_haz.set_index("T500_ID")
+    event_points = exposure_points.merge(
+        event_zones[["raster_i", "raster_j", "rp", "bin_index", "rp_l", "rp_u", "rp_factor"]],
+        on=["raster_i", "raster_j"],
+        how="inner"
     )
+    print(event_points)
+
     if len(event_points) == 0:
         logging.warning("No overlapping raster cells between event zones and exposure points, writing empty file.")
-        event_points.to_parquet(output_dir, index=False)
+        event_points.to_parquet(output_path, index=False)
         return
+    
     event_points.bin_index = event_points.bin_index.astype(np.int32)
 
     if len(event_points):
@@ -343,24 +371,21 @@ def event_depths(event_id, event_zones, exposure_points, hazard_prefix, asset, o
 
         # Output cells
         # T500_ID, depth, cell_index, event
-        event_points = event_points.reset_index()[["T500_ID", "depth", "cell_index", "raster_i", "raster_j"]]
+        event_points = event_points.reset_index()[["depth", "raster_i", "raster_j"]]
 
         
         event_points = event_points[event_points.depth > 0]
-        event_points["event"] = event_id
         event_points["hazard"] = hazard_prefix
 
         if len(asset) == 0:
             logging.warning(f"Asset file is empty, skipping: {asset}")
-            os.makedirs(output_dir, exist_ok=True)  # create empty output dir so Snakemake is satisfied
+            os.makedirs(output_dir, exist_ok=True)
+            event_points.iloc[0:0].to_parquet(os.path.join(output_dir, "split_def.geoparquet"), index=False)
             return
-        
-        event_points = event_points.merge(asset[['raster_i', 'raster_j']], on=['raster_i', 'raster_j'], how='inner')
-        
-        event_points.to_parquet(
-            output_dir, partition_cols=["event"], index=False
-        )
 
+        event_points = event_points.merge(asset[['raster_i', 'raster_j']], on=['raster_i', 'raster_j'], how='inner')
+
+        event_points.to_parquet(os.path.join(output_dir, "split_def.geoparquet"), index=False)
 
 def link_haz_op(haz, ops):
     haz_proj = haz.to_crs("EPSG:3857")
