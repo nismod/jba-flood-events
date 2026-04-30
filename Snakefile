@@ -1,11 +1,13 @@
 import geopandas as gpd
+import pandas as pd
+import os
 configfile: "workflow/config.yaml"
+
+
+# Constants and parameters
 
 gdf = gpd.read_file(config["paths"]["data"] + "/basins/haz_500.gpkg")
 HAZs = gdf["T500_ID"].astype(str).tolist()
-
-ev_id = pd.read_csv(config["paths"]["data"] + "/events/RiverOpInfo.csv")
-EVENTS = ev_id["event.id"].astype(str).unique().tolist()
 
 TYPES = ["Obs", "Sim"] # observed or simulated events
 
@@ -14,11 +16,16 @@ RPs = [20, 50, 100, 200, 500, 1500]
 ASSET_CLASSES = ["railway", "road", "iww", "airport", "airport_field","airport_terminal", "maritime"]
 
 asset_geoms = ["edges", "nodes", "polygons"]
-# HAZ = "500_13_19495"  
-wildcard_constraints:
-    asset="|".join(ASSET_CLASSES)
 
-        
+wildcard_constraints:
+    HAZ="|".join(HAZs),
+    TYPE="Obs|Sim",
+    asset="|".join(ASSET_CLASSES),
+    geom="edges|nodes|polygons"
+
+
+
+###### clips ######
 rule clip_all:  
     """
     To run:
@@ -101,6 +108,17 @@ rule clip_asset_to_HAZ:
             --output_path {output.exposed_clipped}
         """
 
+###### asset splits ######
+
+rule all_splits:
+    input:
+        expand(
+            config["paths"]["data"] + "/event_depths/{HAZ}/split_{asset}_{geom}_network.geoparquet",
+            HAZ=HAZs,
+            asset=ASSET_CLASSES,
+            geom=asset_geoms
+        )
+
 rule split_exposed_asset_to_grid:
     """
     Split exposed assets to grid
@@ -123,35 +141,122 @@ rule split_exposed_asset_to_grid:
             --asset_path {input.asset_geoparquet} \
             --output_path {output.exposed}
         """
-rule all_splits:
+###### Depths assigned to defended areas based on RP of SoP, and split to grid #######
+
+rule split_defended_areas_to_grid:
+    """
+    Split defended areas to grid and assign depth based on RP of SoP
+    
+    
+    e.g. snakemake -c1 ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/def/road_edges_network/split_def.geoparquet
+    """
+    params:
+        rp_dir=config["paths"]["data"] + "/event_depths/{HAZ}/"
+    input:
+        script="workflow/scripts/defended_areas_to_grid.py",
+        defended_geoparquet=config["paths"]["data"] + "/event_depths/{HAZ}/defended_areas.geoparquet",
+        asset_geoparquet=config["paths"]["data"] + "/event_depths/{HAZ}/split_{asset}_{geom}_network.geoparquet"
+    output:
+        defended=config["paths"]["data"] + "/event_depths/{HAZ}/def/{asset}_{geom}_network/split_def.geoparquet"
+    shell:
+        """
+        python {input.script} \
+            --rp_path {params.rp_dir} \
+            --defended_path {input.defended_geoparquet} \
+            --asset_path {input.asset_geoparquet} \
+            --output_path {output.defended}
+        """
+
+rule def_splits:
+    """
+    To run (have to be in Z drive because of file path length issues with clipped assets):
+    subst Z: C://Users//cenv1075//Desktop//GitHubFiles//jba-flood-events
+    cd /z/
+    snakemake def_splits --cores 8 --rerun-incomplete
+    """
     input:
         expand(
-            config["paths"]["data"] + "/event_depths/{HAZ}/split_{asset}_{geom}_network.geoparquet",
+            config["paths"]["data"] + "/event_depths/{HAZ}/def/{asset}_{geom}_network/split_def.geoparquet",
             HAZ=HAZs,
             asset=ASSET_CLASSES,
             geom=asset_geoms
         )
+###### Depth interpolation to events ######
 
-
-
-checkpoint interpolate_depths:
+rule interpolate_depths:
+    params:
+        rp_dir=config["paths"]["data"] + "/event_depths/{HAZ}/",
+        output_dir=config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Events/Undefended/{asset}_{geom}/"
     input:
         script="workflow/scripts/depth_interpolation.py",
         haz=config["paths"]["data"] + "/basins/haz_500.gpkg",
-        rp_folder=config["paths"]["data"] + "/event_depths/{HAZ}/",
         csv=config["paths"]["data"] + "/events/{TYPE}EventRp.csv",
-        gpkg=config["paths"]["data"] + "/events/RiverOpInfo.gpkg"
+        gpkg=config["paths"]["data"] + "/events/RiverOpInfo.gpkg",
+        geoparquet=config["paths"]["data"] + "/event_depths/{HAZ}/split_{asset}_{geom}_network.geoparquet"
     output:
-        outdir=directory(config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Events/")
+        flag=config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Events/Undefended/{asset}_{geom}/.done"
     shell:
         """
         python {input.script} \
             --haz_path {input.haz} \
-            --rp_path {input.rp_folder} \
+            --rp_path {params.rp_dir} \
             --op_path {input.csv} \
             --info_path {input.gpkg} \
-            --output_path {output.outdir}
+            --asset_path {input.geoparquet} \
+            --output_path {params.output_dir}
         """
+
+rule all_depths_int:
+    ''''
+    snakemake all_depths_int --cores 8
+    '''
+    input:
+        expand(
+            config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Events/Undefended/{asset}_{geom}/.done",
+            HAZ=HAZs,
+            TYPE=TYPES,
+            asset=ASSET_CLASSES,
+            geom=asset_geoms
+        )
+
+###### Defended depths ######
+
+    
+rule defended_depths:
+    """
+    undefended depths merged with defended, undefended - sop = defended column with depth reduced according to protection standard
+    snakemake -c1 "C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/ObsEvents/Defended/road_edges/.done"
+    """
+    params:
+        output_dir=config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Events/Defended/{asset}_{geom}/",
+        undefended_dir=config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Events/Undefended/{asset}_{geom}/"
+    input:
+        script="workflow/scripts/defended_depths.py",
+        undefended_flag=config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Events/Undefended/{asset}_{geom}/.done",
+        sop=config["paths"]["data"] + "/event_depths/{HAZ}/def/{asset}_{geom}_network/split_def.geoparquet"
+    output:
+        flag=config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Events/Defended/{asset}_{geom}/.done"
+    shell:
+        """
+        python {input.script} \
+            --undefended_path {params.undefended_dir} \
+            --sop_path {input.sop} \
+            --output_path {params.output_dir}
+        """
+
+rule all_def_depths_int:
+    ''''
+    snakemake all_def_depths_int --cores 8
+    '''
+    input:
+        expand(
+            config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Events/Defended/{asset}_{geom}/.done",
+            HAZ=HAZs,
+            TYPE=TYPES,
+            asset=ASSET_CLASSES,
+            geom=asset_geoms
+        )
+######
 
 rule interpolate_depths_exposure_def:
     """
@@ -199,19 +304,19 @@ rule interpolate_depths_for_exposure:
         touch {output}
         """
 
-rule associate_damage_to_exposure:
-    """exposure with event_damage column (total of damage for each split element, 
-    derived from splits, grouped by asset_id and summed)
-    """
-    input:
-        geoparquet=config["paths"]["data"] + "/event_depths/{HAZ}/{EVENT}/africa_railways_network_split_depth.geoparquet"
-    output: 
-        geoparquet=config["paths"]["data"] + "/event_depths/{HAZ}/{EVENT}/africa_railways_network_split_damage.geoparquet"
-    shell:
-        """
-        echo {input.geoparquet}
-        touch {output.geoparquet}
-        """
+# rule associate_damage_to_exposure:
+#     """exposure with event_damage column (total of damage for each split element, derived from splits, grouped by asset_id and summed)
+#     """
+#     input:
+#         geoparquet=config["paths"]["data"] + "/event_depths/{HAZ}/{EVENT}/africa_railways_network_split_depth.geoparquet"
+#     output: 
+#         geoparquet=config["paths"]["data"] + "/event_depths/{HAZ}/{EVENT}/africa_railways_network_split_damage.geoparquet"
+#     shell:
+#         """
+#         echo {input.geoparquet}
+#         touch {output.geoparquet}
+#         """
+
 rule merge_damage_by_haz:
     """
     merge all EVENT exposure with depths into single file for HAZ:  
