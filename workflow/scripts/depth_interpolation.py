@@ -355,7 +355,7 @@ def event_depths(event_id, event_zones, exposure_points, hazard_prefix, asset, o
             os.makedirs(output_dir, exist_ok=True)  # create empty output dir so Snakemake is satisfied
             return
         
-        event_points = event_points.merge(asset[['raster_i', 'raster_j']], on=['raster_i', 'raster_j'], how='inner')
+        event_points = event_points.merge(asset[['raster_i', 'raster_j','id']], on=['raster_i', 'raster_j'], how='inner')
         
         event_points.to_parquet(
             output_dir, partition_cols=["event"], index=False

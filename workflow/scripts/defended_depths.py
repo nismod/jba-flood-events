@@ -63,9 +63,9 @@ def main(undefended_path, sop_path, output_path):
     Example usage:
 
         python workflow/scripts/defended_depths.py \
-            --undefended_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/ObsEvents/Undefended/road_edges_network/\
-            --sop_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/defroad_edges_network/split_def.geoparquet\
-            --output_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/ObsEvents/Defended/road_edges_network/
+            --undefended_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/ObsEvents/Undefended/road_edges/\
+            --sop_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/def/road_edges_network/split_def.geoparquet\
+            --output_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/ObsEvents/Defended/road_edges/
     """
     os.makedirs(output_path, exist_ok=True)
 
