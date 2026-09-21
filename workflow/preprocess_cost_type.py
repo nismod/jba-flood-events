@@ -125,8 +125,8 @@ def assign_airport_terminal_cost_type(gdf):
 
 
 def assign_airport_field_cost_type(gdf):
-    """airport fields (runway/apron polygons) -> roads_unpaved"""
-    gdf["cost_type"] = "roads_unpaved"
+    """airport fields (runway/apron polygons) -> airport_field"""
+    gdf["cost_type"] = "airport_field"
     return gdf
 
 # ------------------------------------------------------------------
