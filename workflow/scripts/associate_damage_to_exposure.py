@@ -1,39 +1,16 @@
-from posixpath import dirname
-from unittest.mock import sentinel
-
 import click
 import logging
 import os
-import re
-import sys
-import warnings
+
 
 from glob import glob
-from functools import partial
-from pathlib import Path
-from rasterio.plot import show
 
 import pandas as pd
 import geopandas as gpd
-import rasterio
-import rioxarray
-import sklearn
 
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
-
-import openpyxl
-from scipy.stats.mstats import gmean
-from tqdm import tqdm
-from tqdm.contrib.concurrent import process_map
-
-import seaborn as sns
-import matplotlib.pyplot as plt
 import numpy as np
 import snail.damages as sndam
 
-import snakemake  
 
 @click.command()
 @click.version_option("1.0")
@@ -53,6 +30,20 @@ import snakemake
 )
 
 @click.option(
+    "--cost_path",
+    required=True,
+    type=click.Path(exists=False, dir_okay=True, file_okay=False, writable=True),
+    help="Path to costs folder containing csv files for each asset type, e.g. costs/road_edges.csv, costs/airport_field_polygons.csv, costs/iww.csv, etc.",
+)
+
+@click.option(
+    "--curves_path",
+    required=True,
+    type=click.Path(exists=False, dir_okay=True, file_okay=False, writable=True),
+    help="Path to curves folder, e.g. curves/road/, curves/airport_field/, curves/iww/, etc.",
+)
+
+@click.option(
     "--output_path",
     required=True,
     type=click.Path(exists=False, dir_okay=True, file_okay=False, writable=True),
@@ -66,182 +57,95 @@ def main(depth_path, asset_path, cost_path, curves_path, output_path):
     Example usage:
 
         python workflow/scripts/associate_damage_to_exposure.py \
-            --depth_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/ObsEvents/Undefended/road_edges/ \
-            --asset_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/split_road_edges_network.geoparquet \
-            --cost_path ~/Desktop/DataFolders/JBA_flooding/processed_data/costs/road/road_edges_costs.csv \
-            --curves_path ~/Desktop/DataFolders/JBA_flooding/processed_data/curves/road/\
+            --depth_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/ObsEvents/Undefended/road_edges/\
+            --asset_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/split_road_edges_network_prova.parquet\
+            --cost_path ~/Desktop/DataFolders/JBA_flooding/processed_data/costs/\
+            --curves_path ~/Desktop/DataFolders/JBA_flooding/processed_data/curves/\
             --output_path ~/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/ObsCosts/Undefended/road_edges/
     """
     
     
     os.makedirs(output_path, exist_ok=True)
-
-    # upload input data
-
     depth_files = sorted(glob(os.path.join(depth_path, "event=*/*.parquet")))
-    asset_type = os.path.basename(asset_path).split("_")[1]  # e.g. "road"
-    
-    # Load depths 
-    depth = pd.read_parquet(depth_path)      
-    asset = gpd.read_parquet(asset_path)  
-    cost = pd.read_csv(cost_path)
-    curves = glob(os.path.join(curves_path, "*.csv"))
-    
-    for parquet_path in depth_files:
-        # Derive the event folder name, e.g. "event=001"
-        event_folder = os.path.basename(os.path.dirname(parquet_path))  # "event=001"
 
-        # Read the per-event depth data
-        depth_event = pd.read_parquet(parquet_path)  # expects columns: id, depth_m
+    asset_name = os.path.basename(os.path.normpath(depth_path))  # e.g. "road_edges", "airport_field_polygons"
+    asset_type = asset_name.rsplit("_", 1)[0]                         # e.g. "road", "airport_field"
+
+    # Load assets
+    asset = gpd.read_parquet(asset_path)
+
+    epsg = 4326
+    asset = asset.to_crs(epsg)
+
+    # Determine whether this asset is measured by length or area, from geometry type
+    geom_types = asset.geometry.geom_type.unique()
+    if set(geom_types) <= {"LineString", "MultiLineString"}:
+        unit_mode = "length"
+    elif set(geom_types) <= {"Polygon", "MultiPolygon"}:
+        unit_mode = "area"
+    else:
+        raise ValueError(f"Unexpected/mixed geometry types for {asset_name}: {geom_types}")
+
+    # Ensure the relevant size column exists 
+    if unit_mode == "length" and "length_m" not in asset.columns:
+        asset["length_m"] = asset.geometry.length
+    if unit_mode == "area" and "area_m2" not in asset.columns:
+        asset["area_m2"] = asset.geometry.area
+
+    size_col = "length_m" if unit_mode == "length" else "area_m2"
+    cost_col_in_table = "mean_cost_usd_per_m" if unit_mode == "length" else "mean_cost_usd_per_m2"
+    cost_col_out = "cost_usd_per_m" if unit_mode == "length" else "cost_usd_per_m2"
+
+    # Cost table for this specific asset file
+    cost = pd.read_csv(os.path.join(cost_path, f"{asset_name}.csv"))
+
+    # Damage curves for this asset type: one CSV per cost_type, in curves/{asset_type}/
+    curve_files = glob(os.path.join(curves_path, asset_type, "*.csv"))
+    curves = {os.path.splitext(os.path.basename(f))[0]: f for f in curve_files}
+
+    for parquet_path in depth_files:
+        depth_event = pd.read_parquet(parquet_path)
         depth_event = depth_event.rename(columns={"depth": "depth_m"})
 
-        # Merge depth_m onto asset using the shared "id" column
         asset_event = asset.merge(
             depth_event[["id", "depth_m"]],
             on="id",
-            how="left",          # keep all assets; unmatched get NaN depth
+            how="left",
         )
-        
-        if asset_type == "road":
 
-            asset_event["cost_usd_per_m"] = np.where(
-                asset_event["bridge"] == True,
-                cost.loc[cost["asset_type"] == "bridge", "mean_cost_usd_per_m"].values[0],
-                np.where(
-                    asset_event["paved"] == True,
-                    cost.loc[cost["asset_type"] == "paved", "mean_cost_usd_per_m"].values[0],
-                    cost.loc[cost["asset_type"] == "unpaved", "mean_cost_usd_per_m"].values[0]
-                )
+        # Attach unit cost by matching cost_type
+        asset_event = asset_event.merge(
+            cost[["cost_type", cost_col_in_table]],
+            on="cost_type",
+            how="left",
+        ).rename(columns={cost_col_in_table: cost_col_out})
+
+        # Compute proportion_damaged per cost_type, using the matching curve file
+        asset_event["proportion_damaged"] = np.nan
+        for cost_type in asset_event["cost_type"].dropna().unique():
+            curve_file = curves.get(cost_type)
+            if curve_file is None:
+                print(f"Warning: no curve found for cost_type '{cost_type}' in curves/{asset_type}/")
+                continue
+
+            damage_curve = sndam.PiecewiseLinearDamageCurve.from_csv(
+                curve_file,
+                intensity_col="flood_depth_m",
+                damage_col="damage_fraction_mean",
+                comment="#",
             )
-                        
-            
-            damage_curve_bridge = sndam.from_csv(str, curves["bridge"], intensity_col="flood_depth", damage_col="damage_fraction_mean", comment="#", **kwargs,)
-            damage_curve_paved = sndam.from_csv(str, curves["road_paved"], intensity_col="flood_depth", damage_col="damage_fraction_mean", comment="#", **kwargs,)
-            damage_curve_unpaved = sndam.from_csv(str, curves["road_unpaved"], intensity_col="flood_depth", damage_col="damage_fraction_mean", comment="#", **kwargs,)
+            mask = asset_event["cost_type"] == cost_type
+            depths = asset_event.loc[mask, "depth_m"]
+            asset_event.loc[mask, "proportion_damaged"] = damage_curve.damage_fraction(depths)
 
-            paved_depths = asset_event.loc[asset_event.paved==True & asset_event.bridge==False, "depth_m"]
-            paved_damage = damage_curve_paved.damage_fraction(paved_depths)
-            asset_event.loc[asset_event.paved==True, "proportion_damaged"] = paved_damage
+        asset_event["damage_usd"] = (
+            asset_event[size_col] * asset_event[cost_col_out] * asset_event["proportion_damaged"]
+        )
 
-            unpaved_depths = asset_event.loc[asset_event.paved==False & asset_event.bridge==False, "depth_m"]
-            unpaved_damage = damage_curve_unpaved.damage_fraction(unpaved_depths)
-            asset_event.loc[asset_event.paved==False, "proportion_damaged"] = unpaved_damage
-
-            bridge_depths = asset_event.loc[asset_event.bridge==True, "depth_m"]
-            bridge_damage = damage_curve_bridge.damage_fraction(bridge_depths)
-            asset_event.loc[asset_event.bridge==True, "proportion_damaged"] = bridge_damage
-
-            asset_event["damage_usd"] = asset_event["length_m"] * asset_event["cost_usd_per_m"] * asset_event["proportion_damaged"]
-
-        elif asset_type == "railway":
-
-            is_bridge = asset_event["structure"].isin(["bridge", "viaduct"])
-            is_mgr    = asset_event["gauge"] <= 1000
-            is_sgr    = asset_event["gauge"] > 1000
-
-            def cost_val(asset_type_str):
-                return cost.loc[cost["asset_type"] == asset_type_str, "mean_cost_usd_per_m"].values[0]
-
-            asset_event["cost_usd_per_m"] = np.select(
-                [
-                    # Metre gauge (mgr)
-                    is_mgr & is_bridge  & (asset_event["status"] == "open"),
-                    is_mgr & is_bridge  & (asset_event["status"] == "disused"),
-                    is_mgr & ~is_bridge & (asset_event["status"] == "open"),
-                    is_mgr & ~is_bridge & (asset_event["status"] == "disused"),
-                    # Standard gauge (sgr)
-                    is_sgr & is_bridge  & (asset_event["status"] == "open"),
-                    is_sgr & ~is_bridge & (asset_event["status"] == "open"),
-                    is_sgr & ~is_bridge & (asset_event["status"] == "construction"),
-                    is_sgr & ~is_bridge & (asset_event["status"] == "planned"),
-                    is_sgr & ~is_bridge & (asset_event["status"] == "proposed"),
-                ],
-                [
-                    cost_val("mgr_bridge_open"),
-                    cost_val("mgr_bridge_disused"),
-                    cost_val("mgr_track_open"),
-                    cost_val("mgr_track_disused"),
-                    cost_val("mgr_bridge_open"),   # sgr bridge open → mgr_bridge_open
-                    cost_val("sgr_track_open"),
-                    cost_val("sgr_track_construction"),
-                    cost_val("sgr_track_planned"),
-                    cost_val("sgr_track_proposed"),
-                ],
-                default=0  # all other statuses
-            )
-            
-
-            damage_curve_mgr_bridge       = sndam.from_csv(curves["mgr_bridge_open"],        intensity_col="flood_depth", damage_col="damage_fraction_mean", comment="#")
-            damage_curve_mgr_track        = sndam.from_csv(curves["mgr_track_open"],         intensity_col="flood_depth", damage_col="damage_fraction_mean", comment="#")
-            damage_curve_sgr_construction = sndam.from_csv(curves["sgr_track_construction"], intensity_col="flood_depth", damage_col="damage_fraction_mean", comment="#")
-            damage_curve_sgr_open         = sndam.from_csv(curves["sgr_track_open"],         intensity_col="flood_depth", damage_col="damage_fraction_mean", comment="#")
-            damage_curve_sgr_planned      = sndam.from_csv(curves["sgr_track_planned"],      intensity_col="flood_depth", damage_col="damage_fraction_mean", comment="#")
-            damage_curve_sgr_proposed     = sndam.from_csv(curves["sgr_track_proposed"],     intensity_col="flood_depth", damage_col="damage_fraction_mean", comment="#")
-
-            asset_event["proportion_damaged"] = 0.0
-
-            # Metre gauge bridge
-            mgr_bridge_depths = asset_event.loc[is_mgr & is_bridge & (asset_event["status"] == "open"), "depth_m"]
-            asset_event.loc[is_mgr & is_bridge & (asset_event["status"] == "open"), "proportion_damaged"] = damage_curve_mgr_bridge.damage_fraction(mgr_bridge_depths)
-
-            # Metre gauge track
-            mgr_track_depths = asset_event.loc[is_mgr & ~is_bridge & (asset_event["status"] == "open"), "depth_m"]
-            asset_event.loc[is_mgr & ~is_bridge & (asset_event["status"] == "open"), "proportion_damaged"] = damage_curve_mgr_track.damage_fraction(mgr_track_depths)
-
-            # Standard gauge bridge (uses mgr_bridge_open curve)
-            sgr_bridge_depths = asset_event.loc[is_sgr & is_bridge & (asset_event["status"] == "open"), "depth_m"]
-            asset_event.loc[is_sgr & is_bridge & (asset_event["status"] == "open"), "proportion_damaged"] = damage_curve_mgr_bridge.damage_fraction(sgr_bridge_depths)
-
-            # Standard gauge track
-            sgr_open_depths = asset_event.loc[is_sgr & ~is_bridge & (asset_event["status"] == "open"), "depth_m"]
-            asset_event.loc[is_sgr & ~is_bridge & (asset_event["status"] == "open"), "proportion_damaged"] = damage_curve_sgr_open.damage_fraction(sgr_open_depths)
-
-            sgr_construction_depths = asset_event.loc[is_sgr & ~is_bridge & (asset_event["status"] == "construction"), "depth_m"]
-            asset_event.loc[is_sgr & ~is_bridge & (asset_event["status"] == "construction"), "proportion_damaged"] = damage_curve_sgr_construction.damage_fraction(sgr_construction_depths)
-
-            sgr_planned_depths = asset_event.loc[is_sgr & ~is_bridge & (asset_event["status"] == "planned"), "depth_m"]
-            asset_event.loc[is_sgr & ~is_bridge & (asset_event["status"] == "planned"), "proportion_damaged"] = damage_curve_sgr_planned.damage_fraction(sgr_planned_depths)
-
-            sgr_proposed_depths = asset_event.loc[is_sgr & ~is_bridge & (asset_event["status"] == "proposed"), "depth_m"]
-            asset_event.loc[is_sgr & ~is_bridge & (asset_event["status"] == "proposed"), "proportion_damaged"] = damage_curve_sgr_proposed.damage_fraction(sgr_proposed_depths)
-
-            asset_event["damage_usd"] = (
-                asset_event["length_m"] * asset_event["cost_usd_per_m"] * asset_event["proportion_damaged"]
-            )
-
-        elif asset_type == "iww":
-            
-                asset_event["cost_usd_per_m"] = cost.loc[cost["asset_type"] == "general cargo", "mean_cost_usd_per_sqm"].values[0]
-                asset_event["area_sqm"] = asset_event.to_crs("EPSG:102022").geometry.area
-                damage_curve = sndam.from_csv(curves["general cargo"], intensity_col="flood_depth", damage_col="damage_fraction_mean", comment="#")
-                asset_event["proportion_damaged"] = damage_curve.damage_fraction(asset_event["depth_m"])
-                asset_event["damage_usd"] = asset_event["area_sqm"] * asset_event["cost_usd_per_sqm"] * asset_event["proportion_damaged"]
-
-        elif asset_type == "airport_terminal":
-             
-                asset_event["cost_usd_per_m"] = cost.loc[cost["asset_type"] == "airport", "mean_cost_usd_per_sqm"].values[0]*10
-                asset_event["area_sqm"] = asset_event.to_crs("EPSG:102022").geometry.area
-                damage_curve = sndam.from_csv(curves["airport_terminal_polygons_costs"], intensity_col="flood_depth", damage_col="damage_fraction_mean", comment="#")
-                asset_event["proportion_damaged"] = damage_curve.damage_fraction(asset_event["depth_m"])
-                asset_event["damage_usd"] = asset_event["area_sqm"] * asset_event["cost_usd_per_sqm"] * asset_event["proportion_damaged"]
-                
-        elif asset_type == "airport_field":
-                
-                asset_event["cost_usd_per_m"] = cost.loc[cost["asset_type"] == "airport_field", "mean_cost_usd_per_sqm"].values[0]*10
-                asset_event["area_sqm"] = asset_event.to_crs("EPSG:102022").geometry.area
-                damage_curve = sndam.from_csv(curves["airport_field_polygons_costs"], intensity_col="flood_depth", damage_col="damage_fraction_mean", comment="#")
-                asset_event["proportion_damaged"] = damage_curve.damage_fraction(asset_event["depth_m"])
-                asset_event["damage_usd"] = asset_event["area_sqm"] * asset_event["cost_usd_per_sqm"] * asset_event["proportion_damaged"]
-
-        elif asset_type == "maritime":
-        
-
-            
-        
-        # Write one output file per event into the same event=* folder
-        out_dir  = os.path.dirname(parquet_path)
-        out_path = os.path.join(out_dir, "asset_with_depth.parquet")
-        asset_event.to_parquet(out_path, index=False)
+        event_name = os.path.basename(os.path.dirname(parquet_path))   # e.g. "event=E001"
+        out_file = os.path.join(output_path, f"{event_name}.parquet")
+        asset_event.to_parquet(out_file)
+        logging.info(f"Wrote {out_file}")
     
 
 if __name__ == "__main__":
