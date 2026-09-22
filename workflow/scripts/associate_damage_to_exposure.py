@@ -77,6 +77,8 @@ def main(depth_path, asset_path, cost_path, curves_path, output_path):
     epsg = 4326
     asset = asset.to_crs(epsg)
 
+    AFRICA_EQUAL_AREA = "ESRI:102022"   # Albers Equal Area Conic for Africa
+
     # Determine whether this asset is measured by length or area, from geometry type
     geom_types = asset.geometry.geom_type.unique()
     if set(geom_types) <= {"LineString", "MultiLineString"}:
@@ -86,14 +88,15 @@ def main(depth_path, asset_path, cost_path, curves_path, output_path):
     else:
         raise ValueError(f"Unexpected/mixed geometry types for {asset_name}: {geom_types}")
 
-    # Ensure the relevant size column exists 
-    if unit_mode == "length" and "length_m" not in asset.columns:
-        asset["length_m"] = asset.geometry.length
-    if unit_mode == "area" and "area_m2" not in asset.columns:
-        asset["area_m2"] = asset.geometry.area
+    # Always recompute size in a metric, equal-area CRS, overwriting any existing column
+    asset_metric = asset.to_crs(AFRICA_EQUAL_AREA)
+    if unit_mode == "length":
+        asset["length_m"] = asset_metric.geometry.length
+    if unit_mode == "area":
+        asset["area_m2"] = asset_metric.geometry.area
 
     size_col = "length_m" if unit_mode == "length" else "area_m2"
-    cost_col_in_table = "mean_cost_usd_per_m" if unit_mode == "length" else "mean_cost_usd_per_m2"
+    cost_col_in_table = "mean_cost_usd_per_m" if unit_mode == "length" else "mean_cost_usd_per_sqm"
     cost_col_out = "cost_usd_per_m" if unit_mode == "length" else "cost_usd_per_m2"
 
     # Cost table for this specific asset file
