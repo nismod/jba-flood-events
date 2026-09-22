@@ -262,21 +262,47 @@ rule all_def_depths_int:
 
 
 rule associate_damage_to_exposure:
-    """exposure with event_damage column (total of damage for each split element, derived from splits, grouped by asset_id and summed)
+    """Damage per asset element for each event, from event depths, unit costs and damage curves.
+    snakemake -c1 "C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/processed_data/event_depths/500_13_33579/ObsCosts/Undefended/airport_terminal_polygons/.done"
     """
     input:
         script="workflow/scripts/associate_damage_to_exposure.py",
         depth_flag=config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Events/{cond}/{asset}_{geom}/.done",
-        asset_geoparquet=config["paths"]["data"] + "/event_depths/{HAZ}/split_{asset}_{geom}_network.geoparquet"
-    output: 
-        flag=config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Costs/{cond}/{asset}_{geom}/.done"
+        asset_geoparquet=config["paths"]["data"] + "/event_depths/{HAZ}/split_{asset}_{geom}_network_prova.parquet",
+        cost_table=config["paths"]["data"] + "/costs/{asset}_{geom}.csv",
+    output:
+        flag=touch(config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Costs/{cond}/{asset}_{geom}/.done")
+    params:
+        depth_dir=lambda wildcards, input: os.path.dirname(input.depth_flag),
+        out_dir=lambda wildcards, output: os.path.dirname(output.flag),
+        cost_dir=config["paths"]["data"] + "/costs",
+        curves_dir=config["paths"]["data"] + "/curves",
     shell:
         """
         python {input.script} \
-            --depth_path {input.depth_flag} \
+            --depth_path {params.depth_dir} \
             --asset_path {input.asset_geoparquet} \
-            --output_path {output.flag}
+            --cost_path {params.cost_dir} \
+            --curves_path {params.curves_dir} \
+            --output_path {params.out_dir}
         """
+
+rule all_damage_costs:
+    '''
+    To run (have to be in Z drive because of file path length issues with clipped assets):
+    subst Z: C://Users//cenv1075//Desktop//GitHubFiles//jba-flood-events
+    cd /z/
+    snakemake all_damage_costs --cores 8
+    '''
+    input:
+        expand(
+            config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Costs/{cond}/{asset}_{geom}/.done",
+            HAZ=HAZs,
+            TYPE=TYPES,
+            cond=conditions,
+            asset=ASSET_CLASSES,
+            geom=asset_geoms
+        )
 
 # rule merge_damage_by_haz:
 #     """
