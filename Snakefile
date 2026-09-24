@@ -113,6 +113,10 @@ rule clip_asset_to_HAZ:
 ###### asset splits ######
 
 rule all_splits:
+    """
+    To run:
+        snakemake all_splits --cores 4 
+    """
     input:
         expand(
             config["paths"]["data"] + "/event_depths/{HAZ}/split_{asset}_{geom}_network.geoparquet",
@@ -268,7 +272,7 @@ rule associate_damage_to_exposure:
     input:
         script="workflow/scripts/associate_damage_to_exposure.py",
         depth_flag=config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Events/{cond}/{asset}_{geom}/.done",
-        asset_geoparquet=config["paths"]["data"] + "/event_depths/{HAZ}/split_{asset}_{geom}_network_prova.parquet",
+        asset_geoparquet=config["paths"]["data"] + "/event_depths/{HAZ}/split_{asset}_{geom}_network.parquet",
         cost_table=config["paths"]["data"] + "/costs/{asset}_{geom}.csv",
     output:
         flag=touch(config["paths"]["data"] + "/event_depths/{HAZ}/{TYPE}Costs/{cond}/{asset}_{geom}/.done")
