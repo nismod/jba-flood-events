@@ -82,7 +82,7 @@ $$
 <!-- ![Equation 1](images/eq1.svg) -->
 
 $$
-d_{y} = \left\{
+d_{y} = \left\lbrace
   \begin{array}{ c l }
     0 & \quad \textrm{if } r_{y} \leq 2 \\
     d_{l} + \left( d_{u} - d_{l} \right) \frac{\log{r_{y}} - \log{r_{l}}}{\log{r_{u}} - \log{r_{l}}} & \quad \textrm{if } r_{l} < r_{y} \leq r_{u}, \forall r_{l}, r_{u} \in \mathbf{r} \\
