@@ -68,16 +68,28 @@ are each OP for all event sets:
   return periods ($r_{l},r_{u}$) from the set $r$ ∈ (2,20,50,100,200,500,1500).
 
 ```latex
-$d_{y} = \left\{
+$$
+d_{y} = \left\{
   \begin{array}{ c l }
     0 & \quad \textrm{if } r_{y} \leq 2 \\
     d_{l} + \left( d_{u} - d_{l} \right) \frac{\log{r_{y}} - \log{r_{l}}}{\log{r_{u}} - \log{r_{l}}} & \quad \textrm{if } r_{l} < r_{y} \leq r_{u}, \forall r_{l}, r_{u} \in \mathbf{r} \\
     d_{max} & \quad \textrm{if } r_{y} > r_{max}
   \end{array}
-\right.$
+\right.
+$$
 ```
 
-![Equation 1](images/eq1.svg)
+<!-- ![Equation 1](images/eq1.svg) -->
+
+$$
+d_{y} = \left\{
+  \begin{array}{ c l }
+    0 & \quad \textrm{if } r_{y} \leq 2 \\
+    d_{l} + \left( d_{u} - d_{l} \right) \frac{\log{r_{y}} - \log{r_{l}}}{\log{r_{u}} - \log{r_{l}}} & \quad \textrm{if } r_{l} < r_{y} \leq r_{u}, \forall r_{l}, r_{u} \in \mathbf{r} \\
+    d_{max} & \quad \textrm{if } r_{y} > r_{max}
+  \end{array}
+\right.
+$$
 
 <!--
 Note on equation image, using github math rendering service:
@@ -191,5 +203,5 @@ writes to `./outputs`.
 
 ## Acknowledgments
 
-This research received funding from the FCDO Climate Compatible Growth Programme. The views 
+This research received funding from the FCDO Climate Compatible Growth Programme. The views
 expressed here do not necessarily reflect the UK government's official policies.
