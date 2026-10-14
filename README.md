@@ -79,8 +79,6 @@ d_{y} = \left\{
 $$
 ```
 
-<!-- ![Equation 1](images/eq1.svg) -->
-
 $$
 d_{y} = \left\lbrace
   \begin{array}{ c l }
@@ -91,16 +89,6 @@ d_{y} = \left\lbrace
 \right.
 $$
 
-<!--
-Note on equation image, using github math rendering service:
-- this might stop working! could fall back to local latex
-- start with "https://render.githubusercontent.com/render/math?math="
-- then include latex, all on one line (delete newlines)
-- delete start/end "$" symbols
-- replace space " " with "%20"
-- replace       "\" with "%5C"
-- replace       "&" with "%26"
--->
 
 The above assumes that the flood depth > 0 when the OP’s are intersected with
 the return period maps.
