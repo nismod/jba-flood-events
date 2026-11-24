@@ -1,0 +1,27 @@
+# Snakemake profile for SLURM (requires snakemake>=8 and
+# snakemake-executor-plugin-slurm). Run with:
+#
+#     snakemake --profile profiles/slurm all
+#
+# Set slurm_partition / slurm_account for your cluster.
+executor: slurm
+jobs: 200
+latency-wait: 60
+rerun-incomplete: true
+printshellcmds: true
+default-resources:
+  mem_mb: 4000
+  runtime: 60
+  # slurm_partition: "short"
+  # slurm_account: "my-account"
+set-resources:
+  prepare_assets:
+    runtime: 240
+  haz_event_rp:
+    runtime: 120
+# Batch many small per-HAZ jobs into fewer SLURM submissions
+groups:
+  split_assets: per_haz
+  event_damages: per_haz
+group-components:
+  per_haz: 20

@@ -59,8 +59,8 @@ are each OP for all event sets:
   11-year flood. This is the default value of the HORP parameter. This parameter
   can be changed by the user to reflect their knowledge of their exposure, or to
   test sensitivity of losses to the assumption. So basically, they assume that
-  flood depth = 0 at return periods ≤ 11 years. Currently the code is set to
-  interpolate from 2 years. This could be changed.
+  flood depth = 0 at return periods ≤ 11 years. The workflow uses this
+  default (`hazard.horp` in `workflow/config.yaml`).
 
 - The assigned flood depth ($d_{y}$) at an OP for any given return period ($r_{y}$), is
   estimated by intersecting at OP with return period flood maps and then using
@@ -174,6 +174,16 @@ to do the following.
   events by applying steps 1-6 above.
 
 ## Implementation
+
+The continental transport workflow is the `Snakefile`; see
+[`workflow-design.md`](workflow-design.md) for its inputs, outputs and method.
+Copy `config.example.json` to `config.json` and set the data paths, then:
+
+    snakemake --profile profiles/local all     # one machine
+    snakemake --profile profiles/slurm all     # SLURM cluster
+    pytest                                     # tests on synthetic data
+
+### Jamaica scripts
 
 For Jamaica, observed, simulated current and simulated future events run:
 

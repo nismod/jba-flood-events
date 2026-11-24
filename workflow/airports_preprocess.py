@@ -48,8 +48,9 @@ def main(config):
     difference = difference.to_crs("EPSG:4326")
 
 
-    terminals.to_parquet(os.path.join(incoming, "infrastructure/africa_airport_terminal_polygons_network.geoparquet"))
-    difference.to_parquet(os.path.join(incoming, "infrastructure/africa_airport_field_polygons_network.geoparquet"))
+    # Named to match assets.source_path in workflow/config.yaml
+    terminals.to_parquet(os.path.join(output, "infrastructure/africa_airport_terminal_polygons_network.parquet"))
+    difference.to_parquet(os.path.join(output, "infrastructure/africa_airport_field_polygons_network.parquet"))
     
 
     

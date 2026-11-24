@@ -11,6 +11,8 @@ dependencies:
   - numpy
   - pandas
   - pyarrow
+  - pyogrio
+  - pytest
   - rasterio
   - rioxarray
   - scipy
@@ -21,3 +23,4 @@ dependencies:
   - pip
   - pip:
     - nismod-snail
+    - snakemake-executor-plugin-slurm

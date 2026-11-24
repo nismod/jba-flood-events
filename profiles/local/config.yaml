@@ -1,0 +1,8 @@
+# Snakemake profile for a single Linux machine:
+#
+#     snakemake --profile profiles/local all
+cores: 8
+resources:
+  mem_mb: 32000
+rerun-incomplete: true
+printshellcmds: true

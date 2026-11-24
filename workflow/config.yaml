@@ -1,8 +1,55 @@
-
+# Method parameters for the Snakefile.
+#
+# Data paths come from `config.json` at the repository root (copy
+# `config.example.json`), shared with the preprocessing scripts. The `paths`
+# below are used only if there is no `config.json`.
 paths:
-    incoming_data: "C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/incoming_data"
-    data: "C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/processed_data"
-    figures: "C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/figures"
-    results: "C:/Users/cenv1075/Desktop/DataFolders/JBA_flooding/results"
+  incoming_data: "incoming_data"
+  data: "processed_data"
+  figures: "figures"
+  results: "results"
 
+hazard:
+  # Undefended fluvial return period maps, relative to paths.data
+  rp_path: "hazards/flrf_ud_Q{RP}.tif"
+  return_periods: [20, 50, 100, 200, 500, 1500]
+  # Hazard onset return period: zero depth at or below this RP for cells
+  # first wet at the lowest mapped RP. Cells first wet at a higher mapped RP
+  # start at the mean of that RP and the one below it (see README).
+  horp: 11
 
+haz:
+  path: "basins/haz_500.gpkg"
+  id_column: "T500_ID"
+
+events:
+  types: ["Obs", "Sim"]
+  # Relative to paths.data; {TYPE} is one of events.types
+  rp_path: "events/{TYPE}EventRp.csv"
+  op_path: "events/RiverOpInfo.gpkg"
+  # A HAZ with no OP inside takes the nearest OP within this distance
+  nearest_op_max_distance_m: 100000
+  # CRS used to measure that distance (Africa Equidistant Conic)
+  distance_crs: "ESRI:102023"
+
+assets:
+  # Continental layers, relative to paths.data; {layer} is e.g. road_edges
+  source_path: "infrastructure/africa_{layer}_network.parquet"
+  # Layers to run. Leave empty to use every source file that matches
+  # source_path and ends in _edges, _nodes or _polygons.
+  layers: []
+  id_column: "id"
+
+defended:
+  # Relative to paths.data; set to null to skip defended areas
+  path: "defended_areas/defended_areas.gpkg"
+  sop_column: "JBA_SoP"
+
+damage:
+  # Relative to paths.data: costs/{layer}.csv and curves/{asset_type}/{cost_type}.csv
+  cost_path: "costs/{layer}.csv"
+  curves_dir: "curves/{asset_type}"
+
+resources:
+  split_assets_mem_mb: 8000
+  event_damages_mem_mb: 8000
