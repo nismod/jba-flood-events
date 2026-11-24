@@ -16,7 +16,7 @@ import logging
 import click
 import pandas as pd
 
-from floodlib.events import EVENT_ID, HAZ_ID, OP_ID, haz_event_rp
+from jba_events.events import EVENT_ID, HAZ_ID, OP_ID, haz_event_rp
 
 
 @click.command()

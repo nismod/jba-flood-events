@@ -11,7 +11,7 @@ import logging
 
 import click
 
-from floodlib.grid import HazardGrid
+from jba_events.grid import HazardGrid
 
 
 @click.command()

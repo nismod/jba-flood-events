@@ -14,7 +14,7 @@ import logging
 import click
 import geopandas as gpd
 
-from floodlib.events import OP_ID, link_haz_op
+from jba_events.events import OP_ID, link_haz_op
 
 
 @click.command()

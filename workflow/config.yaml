@@ -50,6 +50,39 @@ damage:
   cost_path: "costs/{layer}.csv"
   curves_dir: "curves/{asset_type}"
 
+admin:
+  # Admin-1 polygons with an admin-0 attribute (e.g. GADM level 1), relative
+  # to paths.data. Set path to null to skip admin aggregation.
+  path: "admin/adm1.gpkg"
+  adm1_column: "GID_1"
+  adm0_column: "GID_0"
+
+risk:
+  # Event set used for expected annual and exceedance values
+  event_type: "Sim"
+  # Years the event set represents
+  years: 10000
+  # Annual exceedance probabilities to report (1/p is the return period)
+  exceedance_probabilities: [0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001]
+
+disconnection:
+  # Draft population-disconnected metric; set enabled to false to skip
+  enabled: true
+  network_layer: "road_edges"
+  # An asset fails when its maximum flood depth reaches this (m)
+  depth_threshold_m: 0.5
+  # JRC GHS-POP 2020 1 km grid, relative to paths.data
+  population_path: "population/GHS_POP_E2020_GLOBE_R2023A_54009_1000_V1_0.tif"
+  # JRC GHSL Urban Centre Database, relative to paths.data
+  centres_path: "population/GHS_UCDB.gpkg"
+  centre_id_column: "ID_UC_G0"
+  # Furthest a population cell or urban centre may be from the network (m)
+  max_snap_m: 5000
+  # Events are processed in this many parallel chunks
+  chunks: 20
+
 resources:
   split_assets_mem_mb: 8000
   event_damages_mem_mb: 8000
+  risk_mem_mb: 32000
+  disconnection_mem_mb: 32000

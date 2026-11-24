@@ -4,9 +4,9 @@ import pandas as pd
 import pytest
 from shapely.geometry import LineString, Point, box
 
-from floodlib.events import haz_event_rp, link_haz_op
-from floodlib.grid import HazardGrid
-from floodlib.split import piece_sizes, split_on_window
+from jba_events.events import haz_event_rp, link_haz_op
+from jba_events.grid import HazardGrid
+from jba_events.split import piece_sizes, split_on_window
 
 
 def test_link_haz_op_within_nearest_and_unlinked():

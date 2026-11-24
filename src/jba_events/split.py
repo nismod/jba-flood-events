@@ -13,7 +13,7 @@ import pandas as pd
 import shapely
 from snail.core.intersections import split_linestring
 
-from floodlib.grid import GridWindow
+from jba_events.grid import GridWindow
 
 GEOMETRY_KINDS = {
     "edges": "line",

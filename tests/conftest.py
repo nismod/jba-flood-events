@@ -13,7 +13,6 @@ Depth at a wet RP is rp_index * 0.1 + 0.1 m, so 0.1 at RP20, 0.2 at RP50, ...
 
 import json
 import os
-import sys
 
 import geopandas as gpd
 import numpy as np
@@ -23,7 +22,6 @@ import rasterio
 from affine import Affine
 from shapely.geometry import LineString, Point, box
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "workflow", "scripts"))
 
 RPS = [20, 50, 100, 200, 500, 1500]
 TRANSFORM = Affine(0.01, 0, 10.0, 0, -0.01, 1.0)
@@ -122,6 +120,42 @@ def make_dataset(root):
     for asset_type, cost_type in [("road", "roads_paved"), ("airport_field", "airport_field")]:
         os.makedirs(os.path.join(data, "curves", asset_type))
         curve.to_csv(os.path.join(data, "curves", asset_type, f"{cost_type}.csv"), index=False)
+
+    # admin regions X1 (x < 10.3, country X) and Y1 (country Y)
+    os.makedirs(os.path.join(data, "admin"))
+    gpd.GeoDataFrame(
+        {"GID_1": ["X1", "Y1"], "GID_0": ["X", "Y"]},
+        geometry=[box(9.0, 0.0, 10.3, 2.0), box(10.3, 0.0, 12.0, 2.0)],
+        crs="EPSG:4326",
+    ).to_file(os.path.join(data, "admin", "adm1.gpkg"))
+
+    # population on a 0.05 degree grid; road r1 is the only link from the west to the urban centre
+    os.makedirs(os.path.join(data, "population"))
+    pop = np.zeros((12, 20), dtype=np.float32)
+
+    def set_pop(lon, lat, value):
+        pop[int((1.0 - lat) / 0.05), int((lon - 10.0) / 0.05)] = value
+
+    set_pop(10.025, 0.725, 100)  # near the west end of r1, in X1: served, cut off if r1 floods
+    set_pop(10.975, 0.725, 50)  # in the urban centre, in Y1: always connected
+    set_pop(10.475, 0.875, 9)  # snaps to r2, which has no route to a centre
+    set_pop(10.525, 0.475, 7)  # just over 5 km from the nearest network node
+    with rasterio.open(
+        os.path.join(data, "population", "ghs_pop.tif"), "w", driver="GTiff", width=20, height=12, count=1,
+        dtype="float32", crs="EPSG:4326", transform=Affine(0.05, 0, 10.0, 0, -0.05, 1.0), nodata=-200,
+    ) as dst:
+        dst.write(pop, 1)
+    gpd.GeoDataFrame(
+        {"ID_UC_G0": [1]}, geometry=[box(10.98, 0.69, 11.0, 0.72)], crs="EPSG:4326"
+    ).to_file(os.path.join(data, "population", "urban_centres.gpkg"))
+
+    # method parameters that differ from workflow/config.yaml for the tests
+    with open(os.path.join(root, "test_config.yaml"), "w") as fh:
+        fh.write(
+            "risk:\n  years: 4\n  exceedance_probabilities: [0.5, 0.2]\n"
+            "disconnection:\n  chunks: 2\n  population_path: population/ghs_pop.tif\n"
+            "  centres_path: population/urban_centres.gpkg\n"
+        )
 
     with open(os.path.join(root, "config.json"), "w") as fh:
         json.dump({"paths": {"incoming_data": "incoming_data", "data": data, "figures": "figures", "results": "results"}}, fh)

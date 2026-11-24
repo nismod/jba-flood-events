@@ -20,8 +20,8 @@ import geopandas as gpd
 import numpy as np
 import shapely
 
-from floodlib.grid import HazardGrid
-from floodlib.split import check_geometry_types, layer_kind
+from jba_events.grid import HazardGrid
+from jba_events.split import check_geometry_types, layer_kind
 
 ROW_GROUP_SIZE = 20_000
 

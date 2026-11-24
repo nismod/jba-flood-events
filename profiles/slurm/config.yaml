@@ -19,9 +19,19 @@ set-resources:
     runtime: 240
   haz_event_rp:
     runtime: 120
-# Batch many small per-HAZ jobs into fewer SLURM submissions
+  validate_inputs:
+    runtime: 120
+  aggregate_losses:
+    runtime: 120
+  risk_metrics:
+    runtime: 240
+  disconnection_baseline:
+    runtime: 480
+  disconnection_events:
+    runtime: 480
+# Batch the two jobs per HAZ, several HAZs at a time, into fewer SLURM submissions
 groups:
   split_assets: per_haz
   event_damages: per_haz
 group-components:
-  per_haz: 20
+  per_haz: 10

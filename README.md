@@ -177,7 +177,9 @@ to do the following.
 
 The continental transport workflow is the `Snakefile`; see
 [`workflow-design.md`](workflow-design.md) for its inputs, outputs and method.
-Copy `config.example.json` to `config.json` and set the data paths, then:
+It uses the `jba_events` package in `src/` (installed by `environment.yml`, or
+`pip install -e .`). Copy `config.example.json` to `config.json` and set the
+data paths, then:
 
     snakemake --profile profiles/local all     # one machine
     snakemake --profile profiles/slurm all     # SLURM cluster

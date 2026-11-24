@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from floodlib.depth import event_depths, zero_depth_rp
+from jba_events.depth import event_depths, zero_depth_rp
 
 RPS = np.array([20, 50, 100, 200, 500, 1500], dtype=float)
 

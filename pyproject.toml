@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jba-events"
+version = "0.1.0"
+description = "Flood event exposure, damage and risk for transport assets from JBA event sets"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+dependencies = [
+    "affine",
+    "click",
+    "duckdb",
+    "geopandas>=1.0",
+    "nismod-snail",
+    "numpy",
+    "pandas",
+    "pyarrow",
+    "pyogrio",
+    "pyproj",
+    "rasterio",
+    "scipy",
+    "shapely>=2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "snakemake"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore:Geometry is in a geographic CRS"]

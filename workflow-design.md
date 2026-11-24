@@ -1,8 +1,7 @@
 # Workflow design
 
-Undefended fluvial flood depths and damages for each transport asset piece
-and each observed (`Obs`) or simulated (`Sim`) event, per hydrological
-accumulation zone (HAZ).
+Flood depths, damages and risk for transport assets under each observed (`Obs`)
+or simulated (`Sim`) fluvial flood event, per hydrological accumulation zone (HAZ).
 
 ## Principles
 
@@ -31,6 +30,9 @@ Paths are relative to `paths.data` and set in `workflow/config.yaml`.
     events/RiverOpInfo.gpkg                         river OPs (op.id)
     events/{TYPE}EventRp.csv                        event.id, op.id, rp; TYPE = Obs, Sim
     defended_areas/defended_areas.gpkg              defended polygons, JBA_SoP
+    admin/adm1.gpkg                                 admin-1 polygons with GID_1 and GID_0 (e.g. GADM)
+    population/...                                  GHS-POP grid and urban centres, for the draft
+                                                    population-disconnected metric
     infrastructure/africa_{layer}_network.parquet   one file per layer, e.g. road_edges,
                                                     railway_nodes, airport_field_polygons;
                                                     must have a unique `id` and should have `cost_type`
@@ -47,21 +49,32 @@ incoming data and are run by hand before the Snakefile.
 
 ## Rules and outputs
 
+    prepared/validation.json                           validate_inputs: fails early, listing every problem
     prepared/hazard_grid.json                          hazard_grid: shared grid of the RP maps
     prepared/assets/{layer}.parquet                    prepare_assets: grid CRS, single-part,
                                                        Hilbert-sorted, bbox covering column
     prepared/events/haz_op_links.parquet               link_haz_op: haz_id, op.id, link (within|nearest), distance_m
     prepared/events/{TYPE}_haz_event_rp.parquet        haz_event_rp: haz_id, event.id, rp (geometric mean over OPs)
     exposure/{layer}/haz={HAZ}/splits.parquet          split_assets: one row per asset piece
-    event_damages/{TYPE}/{layer}/haz={HAZ}/part.parquet
-                                                       event_damages: one row per (piece, event) with depth > 0
+    asset_event_damages/{TYPE}/{layer}/haz={HAZ}/part.parquet
+                                                       event_damages: one row per (asset, adm1, event) with depth > 0
+    event_losses/{TYPE}/{layer}/{haz,adm1,adm0}.parquet
+                                                       aggregate_losses: one row per (region, event)
+    risk/{layer}/{asset,haz,adm1,adm0}_expected_annual.parquet
+    risk/{layer}/{asset,haz,adm1,adm0}_exceedance.parquet
+    risk/all/{haz,adm1,adm0}_*.parquet                 risk_metrics: Sim set; `all` sums damage over layers
+    qa/exposure_summary.csv                            qa_summary: assets, pieces and wet size per layer and HAZ
+    disconnection/...                                  draft population-disconnected metric (below)
+
+There are two jobs per HAZ. `split_assets` reads the raster windows once and
+splits every layer. `event_damages` handles every layer and event set.
 
 The `haz=` directories are Hive partitions. Each output directory reads as one
 dataset with a `haz` column:
 
 ```python
 splits = gpd.read_parquet("processed_data/exposure/road_edges")
-damages = pd.read_parquet("processed_data/event_damages/Sim/road_edges")
+damages = pd.read_parquet("processed_data/asset_event_damages/Sim/road_edges")
 per_asset_event = damages.groupby(["id", "event_id"]).damage_undefended_usd.sum()
 ```
 
@@ -71,25 +84,42 @@ per_asset_event = damages.groupby(["id", "event_id"]).damage_undefended_usd.sum(
 |---|---|
 | `split_id` | piece id, unique within the HAZ; (`haz`, `split_id`) is globally unique |
 | `id`, `cost_type` | from the asset layer |
+| `adm1` | admin-1 region containing the piece; null if none |
 | `raster_i`, `raster_j` | global grid cell |
 | `size`, `size_unit` | piece length (m), area (m2), or 1 (count) for points, in local UTM |
 | `sop` | standard of protection RP, the max over defended areas containing the piece; NaN if undefended |
 | `depth_rp{RP}` | mapped undefended depth for the cell at each RP |
 | `geometry` | piece geometry, in the hazard grid CRS |
 
-### part.parquet (event damages)
+### part.parquet (asset event damages)
+
+Pieces are summed to the asset within each HAZ and admin-1 region, so an asset
+that crosses a boundary has one row per side. Sum over `haz` and `adm1` for
+whole-asset values.
 
 | column | |
 |---|---|
-| `split_id`, `id` | piece and asset |
+| `id`, `adm1` | asset and admin-1 region |
 | `event_id`, `rp` | event and its RP in this HAZ |
-| `depth_m` | interpolated undefended depth |
-| `protected` | event RP ≤ piece SoP |
-| `damage_fraction` | from the damage curve for the piece's cost_type |
-| `damage_undefended_usd` | size × unit cost × damage fraction |
-| `damage_defended_usd` | 0 if protected, else the undefended damage |
+| `max_depth_m` | deepest interpolated undefended depth over the asset's pieces |
+| `max_depth_defended_m` | the same, ignoring pieces protected in this event |
+| `exposed_size`, `exposed_size_defended` | flooded length, area or count |
+| `damage_undefended_usd` | sum of size × unit cost × damage fraction |
+| `damage_defended_usd` | the same, with protected pieces at zero |
 
-Damage is null for exposure-only pieces (no `cost_type`), e.g. nodes.
+Damage is null for exposure-only assets (no `cost_type`), e.g. nodes.
+
+The piece-by-event table isn't stored: it is a function of `splits.parquet`
+and the event RPs, and can be very large. Rebuild it for chosen events with
+`jba_events.damage.piece_event_table`.
+
+### Risk tables
+
+`*_expected_annual.parquet` has `expected_annual_{value}` per key.
+`*_exceedance.parquet` has one row per key and `probability`, with
+`return_period` (1 / probability) and a column per value. Values are
+`damage_undefended_usd`, `damage_defended_usd`, `exposed_size` and
+`exposed_size_defended`; the `all` tables hold damage only.
 
 ## Method
 
@@ -108,10 +138,54 @@ mapped RPs, and d_n for rp ≥ r_n.
 **Defended.** Depth (and damage) is zero when the event RP ≤ the piece's SoP,
 otherwise it's the undefended value.
 
+**Risk.** The Sim set represents `risk.years` years (10,000). Expected annual
+damage is the sum of event losses divided by the years. For exceedance, the
+k-th largest event loss is exceeded k times in N years, so its annual
+exceedance probability is 1 − exp(−k / N). This is an occurrence probability
+(largest single event in a year). An annual-aggregate version needs the
+event-to-year mapping, which the workflow doesn't read yet. Probabilities are
+set in `risk.exceedance_probabilities`.
+
+## Population disconnected (draft)
+
+Inputs, set under `disconnection` in the config: JRC GHS-POP 2020 1 km
+population grid, the JRC GHSL Urban Centre Database, and a network layer
+(`road_edges`). The network must be noded at edge ends.
+
+Baseline (`disconnection_baseline`, once): urban centres are the network nodes
+inside each centre polygon (or the nearest node). One multi-source shortest-path
+pass gives each node its nearest centre by network distance. Each populated
+cell is snapped to its nearest node within `max_snap_m`. Its population is
+*served* if that node can reach a centre; `summary.json` reports the served,
+`too_far` and `no_route` totals.
+
+Per event (`disconnection_events`, in `chunks` parallel parts): an asset fails
+when its maximum depth reaches `depth_threshold_m` (0.5 m). With failed edges
+removed, a served node is
+
+- **disconnected** if it is no longer connected to its baseline nearest centre
+- **isolated** if it can't reach any urban centre (a subset of disconnected).
+
+    disconnection/baseline/{edges,nodes,sources,cells,population}.parquet, summary.json
+    disconnection/{TYPE}/events/part-{chunk}.parquet
+        event_id, protection (undefended|defended), adm1, adm0,
+        population_disconnected, population_isolated
+    disconnection/Sim/risk/{adm1,adm0,total}_expected_annual.parquet
+        annual_probability_any, expected_annual_population_disconnected, ..._isolated
+    disconnection/Sim/risk/{adm1,adm0,total}_exceedance.parquet
+
+The expected annual value counts people × events per year. Regions are those
+of the population cell, not of the flooded road.
+
+Known limits: the metric counts loss of any route, not longer journeys; only
+one network layer is used; a cell is affected only through the node it snaps
+to; and cells further than `max_snap_m` beyond the network extent aren't counted.
+
 ## Running
 
     snakemake --profile profiles/local all     # one machine
     snakemake --profile profiles/slurm all     # SLURM
+    pip install -e .                           # the jba_events package (in environment.yml)
     pytest                                     # synthetic-data tests, incl. a full Snakemake run
 
 Data paths come from `config.json` at the repository root (copy
