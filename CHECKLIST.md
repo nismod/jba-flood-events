@@ -35,13 +35,19 @@ are in `workflow/config.yaml` unless noted.
       describe the largest single event in a year, not a year's summed losses.
       Expected annual values aren't affected. If `SimEventInfo.csv` has a year
       column, an annual-aggregate version can be added.
-- [ ] **Road network is noded at edge ends.** The population-disconnected
-      metric rebuilds topology from edge endpoints. Check
+- [ ] **Road network is noded at junctions.** The network is built from edge
+      ends (joined within `disconnection.node_tolerance_m`), and roads that
+      cross without sharing an end are not joined. Check
       `disconnection/baseline/summary.json`: a large `no_route` share means
       the network is fragmented, and a large `too_far` share means the snap
       distance (`disconnection.max_snap_m`) is too small.
+- [ ] **snkit prerelease.** The `network` extra installs snkit 2.0 from the
+      `claude/spatial-network-api-nbfu58` branch, which compiles a Rust kernel
+      (`rust` is in `environment.yml`). Pin a commit or release before relying
+      on results.
 - [ ] **Flood threshold for road failure** (`disconnection.depth_threshold_m`,
-      default 0.5 m).
+      default 0.5 m). The whole asset fails when any piece reaches it, so long
+      assets fail more easily than short ones; check asset lengths.
 - [ ] **Exposure totals.** Compare `qa/exposure_summary.csv` against the
       source layers, and look for HAZs with unexpectedly little exposure.
 - [ ] **HAZ to OP links.** In `prepared/events/haz_op_links.parquet`, check

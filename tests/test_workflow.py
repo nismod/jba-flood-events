@@ -10,8 +10,12 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
+from pyproj import Geod
+
+from scipy.sparse.csgraph import dijkstra
 
 from jba_events.damage import PieceCosting, asset_event_chunks, piece_event_table
+from jba_events.disconnection import min_csr
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 YEARS = 4  # risk.years in the test config
@@ -165,27 +169,83 @@ def test_expected_annual_and_exceedance(run):
 
 def test_qa_summary(run):
     qa = pd.read_csv(os.path.join(run, "qa", "exposure_summary.csv")).set_index(["layer", "haz"])
-    assert qa.loc[("road_edges", "A"), "pieces"] == 90
+    splits = read(run, "exposure", "road_edges")
+    assert qa.loc[("road_edges", "A"), "pieces"] == (splits.haz == "A").sum()
+    assert qa.loc[("road_edges", "A"), "assets"] == splits[splits.haz == "A"].id.nunique()
     assert qa.loc[("road_edges", "B"), "size_defended"] > 0
     assert qa.loc[("road_edges", "A"), "size_wet_rp20"] < qa.loc[("road_edges", "A"), "size_wet_rp50"]
 
 
-def test_population_disconnected(run):
+def test_population_baseline(run):
     with open(os.path.join(run, "disconnection", "baseline", "summary.json")) as fh:
         summary = json.load(fh)
-    assert summary == {"served": 150.0, "no_route": 9.0, "too_far": 7.0, "total": 166.0}
+    assert {k: summary[k] for k in ["served", "no_route", "too_far", "total"]} == {
+        "served": 190.0, "no_route": 9.0, "too_far": 7.0, "total": 206.0,
+    }
+    nodes = read(run, "disconnection", "baseline", "nodes.parquet")
+    edges = read(run, "disconnection", "baseline", "edges.parquet")
+    # every blended point has exactly one connector, and split pieces keep their road's asset id
+    blended = nodes[nodes.kind.isin(["population", "centre"]) & (nodes.status != "too_far")]
+    connectors = edges[edges.asset_id.isna()]
+    assert len(connectors) == len(blended)
+    assert set(edges.asset_id.dropna()) == {"r1", "r2", "r3"}
+    roads = gpd.read_parquet(os.path.join(run, "infrastructure", "africa_road_edges_network.parquet"))
+    geod = Geod(ellps="WGS84")
+    for asset in ["r1", "r3"]:
+        assert edges[edges.asset_id == asset].length_m.sum() == pytest.approx(
+            geod.geometry_length(roads[roads.id == asset].geometry.iloc[0]), rel=1e-6
+        )
+    # people inside the urban centre are at a source
+    inside = nodes[(nodes.kind == "population") & (nodes.population == 50)]
+    assert inside.is_source.all() and (inside.distance_m == 0).all()
 
+
+def test_population_disconnected_and_detoured(run):
     events = pd.concat(read(run, "disconnection", "Sim", "events", f"part-{i}.parquet") for i in range(2))
-    # only Sim event 10 floods r1 to 0.5 m or more; it cuts the western 100 people off
+    # only Sim event 10 floods r1 to 0.5 m or more
     assert set(events.event_id) == {10}
-    undefended = events[events.protection == "undefended"]
-    assert undefended.adm1.tolist() == ["X1"]
-    assert undefended.population_disconnected.tolist() == [100.0]
-    assert undefended.population_isolated.tolist() == [100.0]
+    undefended = events[events.protection == "undefended"].set_index("adm1")
+    assert undefended.index.tolist() == ["X1"]
+    # the 100 on r1 are cut off; the 40 on the bypass go the long way round
+    assert undefended.loc["X1", "population_disconnected"] == 100
+    assert undefended.loc["X1", "population_detoured"] == 40
+
+    # detour: checked against a full search of the network without r1
+    nodes = read(run, "disconnection", "baseline", "nodes.parquet")
+    edges = read(run, "disconnection", "baseline", "edges.parquet")
+    sources = read(run, "disconnection", "baseline", "sources.parquet").node.to_numpy()
+    intact = edges[edges.asset_id != "r1"]
+    u, v, w = intact.u.to_numpy(), intact.v.to_numpy(), intact.length_m.to_numpy()
+    after = dijkstra(min_csr(np.r_[u, v], np.r_[v, u], np.r_[w, w], len(nodes)), indices=sources, min_only=True)
+    person = nodes[(nodes.kind == "population") & (nodes.population == 40)].iloc[0]
+    detour_km = (after[person.node] - person.distance_m) / 1000
+    assert undefended.loc["X1", "detour_person_km"] == pytest.approx(40 * detour_km, rel=1e-6)
+    # the bypass via y = 1.05 is about 0.35 degrees of extra latitude, each way
+    assert detour_km == pytest.approx(0.345 * 110.6, rel=0.05)
 
     total = read(run, "disconnection", "Sim", "risk", "total_expected_annual.parquet").set_index("protection")
     assert total.loc["undefended", "expected_annual_population_disconnected"] == pytest.approx(100 / YEARS)
+    assert total.loc["undefended", "expected_annual_population_detoured"] == pytest.approx(40 / YEARS)
     assert total.loc["undefended", "annual_probability_any"] == pytest.approx(1 - math.exp(-1 / YEARS))
     exc = read(run, "disconnection", "Sim", "risk", "adm0_exceedance.parquet")
     exc = exc[exc.protection == "undefended"].set_index("probability")
     assert exc.loc[0.2, "population_disconnected"] == 100 and exc.loc[0.5, "population_disconnected"] == 0
+
+
+def test_network_criticality(run):
+    crit = read(run, "disconnection", "criticality.parquet").set_index("asset_id")
+    assert crit.index.tolist() == ["r1", "r3"]  # ranked; r2 carries no served population
+    # everyone served outside the centre routes along r1; r1 alone failing is event 10's impact
+    assert crit.loc["r1", "population_routed"] == 140
+    assert crit.loc["r1", "population_disconnected"] == 100
+    assert crit.loc["r1", "population_detoured"] == 40
+    events = pd.concat(read(run, "disconnection", "Sim", "events", f"part-{i}.parquet") for i in range(2))
+    assert crit.loc["r1", "detour_person_km"] == pytest.approx(
+        events[events.protection == "undefended"].detour_person_km.sum()
+    )
+    # the 40 on the bypass have no other way out if r3 fails
+    assert crit.loc["r3", "population_routed"] == 40 and crit.loc["r3", "population_disconnected"] == 40
+    # r1 fails in one Sim event in 4 years; the bypass never floods
+    assert crit.loc["r1", "annual_failure_frequency_undefended"] == pytest.approx(1 / YEARS)
+    assert crit.loc["r3", "annual_failure_frequency_undefended"] == 0
+    assert crit.loc["r1", "expected_annual_population_disconnected_if_alone"] == pytest.approx(100 / YEARS)

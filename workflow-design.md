@@ -64,7 +64,7 @@ incoming data and are run by hand before the Snakefile.
     risk/{layer}/{asset,haz,adm1,adm0}_exceedance.parquet
     risk/all/{haz,adm1,adm0}_*.parquet                 risk_metrics: Sim set; `all` sums damage over layers
     qa/exposure_summary.csv                            qa_summary: assets, pieces and wet size per layer and HAZ
-    disconnection/...                                  draft population-disconnected metric (below)
+    disconnection/...                                  draft population metrics and criticality (below)
 
 There are two jobs per HAZ. `split_assets` reads the raster windows once and
 splits every layer. `event_damages` handles every layer and event set.
@@ -146,40 +146,77 @@ exceedance probability is 1 − exp(−k / N). This is an occurrence probability
 event-to-year mapping, which the workflow doesn't read yet. Probabilities are
 set in `risk.exceedance_probabilities`.
 
-## Population disconnected (draft)
+## Population disconnected and detoured (draft)
 
 Inputs, set under `disconnection` in the config: JRC GHS-POP 2020 1 km
 population grid, the JRC GHSL Urban Centre Database, and a network layer
-(`road_edges`). The network must be noded at edge ends.
+(`road_edges`). The network is built with snkit 2.0 (prerelease, from the
+`claude/spatial-network-api-nbfu58` branch; the `network` extra).
 
-Baseline (`disconnection_baseline`, once): urban centres are the network nodes
-inside each centre polygon (or the nearest node). One multi-source shortest-path
-pass gives each node its nearest centre by network distance. Each populated
-cell is snapped to its nearest node within `max_snap_m`. Its population is
-*served* if that node can reach a centre; `summary.json` reports the served,
-`too_far` and `no_route` totals.
+**Baseline** (`disconnection_baseline`, once):
 
-Per event (`disconnection_events`, in `chunks` parallel parts): an asset fails
-when its maximum depth reaches `depth_threshold_m` (0.5 m). With failed edges
-removed, a served node is
+1. `snkit.from_edges` builds the road network, joining line ends within
+   `node_tolerance_m`.
+2. Each populated cell centre and each urban centre (its representative
+   point) is added as a node and blended in with `snkit.link_nodes_to_edges`:
+   projected onto its nearest road within `max_snap_m`, the road split
+   there, and a connector edge added. Split pieces keep their road's asset
+   id, so they fail with it; connectors have none and never fail. Snapping is
+   done in `network_crs`; route lengths are geodesic.
+3. Sources are the blended centre nodes and every node inside a centre
+   polygon, so people living in an urban centre are already at one.
+4. One multi-source shortest-path search gives each node its distance d0 to
+   the nearest centre, and a shortest-path tree. Each node's subtree is
+   recorded as an interval of a preorder walk of the tree.
 
-- **disconnected** if it is no longer connected to its baseline nearest centre
-- **isolated** if it can't reach any urban centre (a subset of disconnected).
+Population cells are `served`, `too_far` (no road within `max_snap_m`) or
+`no_route` (on a part of the network with no centre); `summary.json` totals them.
 
-    disconnection/baseline/{edges,nodes,sources,cells,population}.parquet, summary.json
+**Failures.** An asset fails in an event when its maximum depth reaches
+`depth_threshold_m` (0.5 m). When a set of edges is removed, only nodes in
+the subtrees below removed tree edges can change distance. Those are found
+from the preorder intervals, and their new distances d1 come from a search
+over those nodes alone: from a virtual source joined to each of them at
+d0 of its intact outside neighbour plus the edge length. This is exact (tested
+against full searches on random networks) and its cost follows the size of
+the cut-off subtrees, not the size of the network.
+
+A served person is
+
+- **disconnected** if d1 is infinite: no centre can be reached
+- **detoured** if d1 > d0 (by more than 1 m), adding d1 − d0 to their trip.
+
+**Per event** (`disconnection_events`, in `chunks` parallel parts):
+
     disconnection/{TYPE}/events/part-{chunk}.parquet
         event_id, protection (undefended|defended), adm1, adm0,
-        population_disconnected, population_isolated
+        population_disconnected, population_detoured, detour_person_km
     disconnection/Sim/risk/{adm1,adm0,total}_expected_annual.parquet
-        annual_probability_any, expected_annual_population_disconnected, ..._isolated
+        annual_probability_any, expected_annual_population_disconnected,
+        expected_annual_population_detoured, expected_annual_detour_person_km
     disconnection/Sim/risk/{adm1,adm0,total}_exceedance.parquet
 
-The expected annual value counts people × events per year. Regions are those
-of the population cell, not of the flooded road.
+Expected annual values count people × events per year. Regions are those of
+the population cell, not of the flooded road.
 
-Known limits: the metric counts loss of any route, not longer journeys; only
-one network layer is used; a cell is affected only through the node it snaps
-to; and cells further than `max_snap_m` beyond the network extent aren't counted.
+**Static criticality** (`network_criticality`, in `criticality_chunks`
+parallel parts, needing only the baseline): each asset is failed on its own.
+
+    disconnection/criticality.parquet
+        asset_id, population_routed (whose baseline route uses the asset),
+        population_disconnected, population_detoured, detour_person_km,
+        annual_failure_frequency_undefended, _defended (Sim events per year in
+        which the asset fails), expected_annual_population_disconnected_if_alone,
+        expected_annual_detour_person_km_if_alone
+
+Ranked by population disconnected, then detour. The "if alone" columns
+multiply single-failure impact by failure frequency. They rank assets by flood
+risk, but aren't the asset's share of event impacts: in an event, other assets
+fail at the same time.
+
+Known limits: distance only, with no speeds, road classes or congestion;
+centres are equivalent destinations; one network layer; cells further than
+`max_snap_m` beyond the network extent aren't counted.
 
 ## Running
 

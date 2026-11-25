@@ -1,15 +1,16 @@
-"""Annual probability and expectation of population disconnected, by region.
+"""Annual probability and expectation of population disconnected and detoured, by region.
 
 Reads the per-event tables from `disconnection_events.py` and writes, for each
 of the levels adm1, adm0 and total:
 
     {level}_expected_annual.parquet
         key..., protection, annual_probability_any (of at least one event that
-        disconnects anyone), expected_annual_population_disconnected,
-        expected_annual_population_isolated (people x events per year)
+        disconnects or detours anyone), expected_annual_population_disconnected,
+        expected_annual_population_detoured (people x events per year),
+        expected_annual_detour_person_km
     {level}_exceedance.parquet
         key..., protection, probability, return_period,
-        population_disconnected, population_isolated
+        population_disconnected, population_detoured, detour_person_km
 
 See `jba_events.risk` for the method.
 
@@ -29,7 +30,7 @@ import duckdb
 
 from jba_events.risk import exceedance, expected_annual
 
-VALUES = ["population_disconnected", "population_isolated"]
+VALUES = ["population_disconnected", "population_detoured", "detour_person_km"]
 LEVEL_KEYS = {"adm1": ["adm1", "adm0"], "adm0": ["adm0"], "total": []}
 
 
@@ -53,7 +54,7 @@ def main(years, probabilities, output_dir, event_tables):
         )
         expected = expected_annual(con, "events", keys, VALUES, years)
         counts = con.sql(
-            f"SELECT {key_sql}, count(*) AS n_events FROM events WHERE population_disconnected > 0 GROUP BY {key_sql}"
+            f"SELECT {key_sql}, count(*) AS n_events FROM events WHERE population_disconnected > 0 OR population_detoured > 0 GROUP BY {key_sql}"
         ).df()
         expected = expected.merge(counts, on=keys, how="left")
         expected["annual_probability_any"] = [

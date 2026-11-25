@@ -25,7 +25,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "snakemake"]
+# Network building for the population-disconnected metrics. snkit 2.0 is not
+# released yet; this is the prerelease branch, which builds a Rust kernel
+# (needs a Rust toolchain to install).
+network = ["snkit @ git+https://github.com/nismod/snkit@claude/spatial-network-api-nbfu58"]
+dev = ["jba-events[network]", "pytest", "snakemake"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

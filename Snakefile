@@ -14,7 +14,8 @@ per HAZ. See workflow-design.md.
     aggregate_losses     per set, layer    event losses by HAZ, adm1, adm0
     risk_metrics         per layer + all   expected annual and exceedance values
     qa_summary           once              exposure per layer and HAZ
-    disconnection_*      draft             population disconnected per event, and its risk
+    disconnection_*      draft             population disconnected and detoured per event, and its risk
+    network_criticality  draft, static     per asset: population disconnected or detoured if it alone fails
 
 Run everything:
 
@@ -119,7 +120,10 @@ def risk_outputs(directory, levels):
 def disconnection_targets():
     if not DISCONNECTION["enabled"]:
         return []
-    return risk_outputs(data_path("disconnection", RISK_TYPE, "risk"), ["adm1", "adm0", "total"])
+    return [
+        *risk_outputs(data_path("disconnection", RISK_TYPE, "risk"), ["adm1", "adm0", "total"]),
+        data_path("disconnection", "criticality.parquet"),
+    ]
 
 
 rule all:
@@ -348,10 +352,11 @@ rule qa_summary:
         "python {input.script} {params.rps} --output {output} {params.layer_dirs}"
 
 
-# Draft population-disconnected metric
+# Draft population-disconnected and detour metrics, and static criticality
 
 DISCONNECTION_BASELINE = data_path("disconnection", "baseline")
 DISCONNECTION_EVENTS = data_path("disconnection", "{TYPE}", "events", "part-{chunk}.parquet")
+CRITICALITY_PARTS = data_path("disconnection", "criticality", "part-{chunk}.parquet")
 NETWORK_LAYER = DISCONNECTION["network_layer"]
 
 
@@ -365,7 +370,7 @@ rule disconnection_baseline:
     output:
         expand(
             os.path.join(DISCONNECTION_BASELINE, "{file}"),
-            file=["edges.parquet", "nodes.parquet", "sources.parquet", "cells.parquet", "population.parquet", "summary.json"],
+            file=["nodes.parquet", "edges.parquet", "sources.parquet", "summary.json"],
         ),
     params:
         admin=admin_flags(),
@@ -375,7 +380,9 @@ rule disconnection_baseline:
         """
         python {input.script} --network {input.network} --population {input.population} \
             --centres {input.centres} --centre_id_column {DISCONNECTION[centre_id_column]} \
-            {params.admin} --max_snap_m {DISCONNECTION[max_snap_m]} --output_dir {DISCONNECTION_BASELINE}
+            {params.admin} --network_crs '{DISCONNECTION[network_crs]}' \
+            --max_snap_m {DISCONNECTION[max_snap_m]} --node_tolerance_m {DISCONNECTION[node_tolerance_m]} \
+            --output_dir {DISCONNECTION_BASELINE}
         """
 
 
@@ -410,4 +417,37 @@ rule disconnection_risk:
         """
         python {input.script} --years {config[risk][years]} {PROBABILITY_FLAGS} \
             --output_dir {params.output_dir} {input.events}
+        """
+
+
+rule network_criticality:
+    """Static: needs only the baseline network, not the flood events."""
+    input:
+        script="workflow/scripts/network_criticality.py",
+        baseline=rules.disconnection_baseline.output,
+    output:
+        CRITICALITY_PARTS,
+    resources:
+        mem_mb=config["resources"]["disconnection_mem_mb"],
+    shell:
+        """
+        python {input.script} --baseline_dir {DISCONNECTION_BASELINE} --chunk {wildcards.chunk} \
+            --n_chunks {DISCONNECTION[criticality_chunks]} --output {output}
+        """
+
+
+rule network_criticality_summary:
+    input:
+        script="workflow/scripts/network_criticality_summary.py",
+        parts=expand(CRITICALITY_PARTS, chunk=range(DISCONNECTION["criticality_chunks"])),
+        events=expand(ASSET_EVENTS, TYPE=RISK_TYPE, layer=NETWORK_LAYER, HAZ=HAZS),
+    output:
+        data_path("disconnection", "criticality.parquet"),
+    params:
+        asset_events=data_path("asset_event_damages", RISK_TYPE, NETWORK_LAYER),
+    shell:
+        """
+        python {input.script} --asset_events {params.asset_events} \
+            --threshold_m {DISCONNECTION[depth_threshold_m]} --years {config[risk][years]} \
+            --output {output} {input.parts}
         """

@@ -1,129 +1,67 @@
-"""Draft "population disconnected" metric for flood events.
+"""Population disconnected and detour distance for flood events (draft).
 
 Baseline (once):
 
-1. Build a graph from a network layer (roads). Nodes are the distinct edge
-   endpoints, so the network must be noded at edge ends.
-2. Urban centres are sources: every network node inside a centre polygon,
-   or the node nearest the centre if none is inside.
-3. One multi-source shortest-path pass gives each node its nearest centre
-   by network distance.
-4. Each populated grid cell is snapped to its nearest node, within a snap
-   limit. Its population is "served" if that node can reach a centre.
+1. Build a network from a road layer with snkit, joining line ends within
+   `node_tolerance_m`.
+2. Add a node for each populated grid cell and each urban centre, and blend
+   them into the network: each is projected onto its nearest road within
+   `max_snap_m`, the road is split there, and a connector edge is added.
+   Split pieces keep the asset id of their road; connectors have none and
+   never fail.
+3. Urban centres are the sources: their blended nodes, and every network
+   node inside a centre polygon.
+4. One multi-source shortest-path pass gives each node its distance to the
+   nearest centre, d0, and a shortest-path tree.
 
-Per event:
+Per event (or per asset, for static criticality):
 
-5. Remove every edge of an asset whose flood depth reaches the threshold.
-6. A served node is *disconnected* if it is no longer in the same connected
-   component as its baseline nearest centre. It is *isolated* if its
-   component contains no urban centre at all (a subset of disconnected).
-7. Sum the population of disconnected and isolated nodes by admin region.
+5. Remove every edge of each failed asset.
+6. Only nodes whose tree path to a centre used a removed edge can change:
+   the subtrees below removed tree edges. Distances are recomputed for those
+   nodes alone (see `RouteNetwork.reroute`), which gives exactly the same
+   result as re-running the whole shortest-path search.
+7. A served population node is *disconnected* if it can no longer reach any
+   centre, and *detoured* if it can, but by a longer route. The detour is
+   d1 - d0, counted in person-km.
 
-Limits of this draft: it measures loss of any route, not longer journeys or
-congestion; a cell is flooded-in only through its snapped node; centres are
-treated as equivalent destinations; and only one network layer is used.
+Limits of this draft: distance is along the network, with no speeds or
+congestion; centres are treated as equivalent destinations; only one network
+layer is used.
 """
 
 import logging
+import os
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
+import rasterio.features
 import rasterio.windows
 import scipy.sparse as sp
 import shapely
 from pyproj import Geod, Transformer
-from scipy.sparse.csgraph import connected_components, dijkstra
-from scipy.spatial import cKDTree
+from scipy.sparse.csgraph import depth_first_order, dijkstra
 
-EARTH_RADIUS_M = 6_371_008.8
-COORD_DECIMALS = 7
+# Distances shorter than this (m) are rounding, not detours
+DETOUR_EPSILON_M = 1.0
+# Lower bound on edge weights, so zero-length edges still count as edges
+MIN_EDGE_M = 1e-3
 
-
-def _xyz(lon, lat) -> np.ndarray:
-    lon, lat = np.radians(lon), np.radians(lat)
-    return np.column_stack([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)])
+KIND_ROAD, KIND_POPULATION, KIND_CENTRE = "road", "population", "centre"
 
 
-def nearest_nodes(node_lon, node_lat, lon, lat):
-    """Index of, and great-circle distance (m) to, the nearest node for each point."""
-    tree = cKDTree(_xyz(node_lon, node_lat))
-    chord, index = tree.query(_xyz(lon, lat))
-    return index, 2 * EARTH_RADIUS_M * np.arcsin(np.clip(chord / 2, 0, 1))
+# ---------------------------------------------------------------------------
+# Inputs
 
 
-def build_graph(edges: gpd.GeoDataFrame):
-    """Edge and node tables from single-part line features with an `id` column.
+def read_population_cells(path, bounds_lonlat, admin=None, adm1_column=None, adm0_column=None) -> pd.DataFrame:
+    """Populated cells of a population raster within lon/lat bounds.
 
-    Returns (edge_table[u, v, id, length_m], node_table[node, lon, lat]).
-    Parts of one asset share its id, so they fail together.
+    Returns lon, lat (cell centre), population, and adm1, adm0 of the admin
+    polygon containing the cell centre (null if none).
     """
-    edges = edges.to_crs("EPSG:4326")
-    geoms = np.asarray(edges.geometry.values)
-    start = shapely.get_coordinates(shapely.get_point(geoms, 0))
-    end = shapely.get_coordinates(shapely.get_point(geoms, -1))
-    coords = np.round(np.vstack([start, end]), COORD_DECIMALS)
-    unique, inverse = np.unique(coords, axis=0, return_inverse=True)
-    inverse = np.asarray(inverse).ravel()
-    n = len(edges)
-    geod = Geod(ellps="WGS84")
-    length = np.array([geod.geometry_length(g) for g in geoms], dtype=float)
-    edge_table = pd.DataFrame(
-        {"u": inverse[:n].astype(np.int64), "v": inverse[n:].astype(np.int64), "id": edges["id"].to_numpy(), "length_m": length}
-    )
-    node_table = pd.DataFrame({"node": np.arange(len(unique)), "lon": unique[:, 0], "lat": unique[:, 1]})
-    logging.info("Network graph: %d nodes, %d edges", len(node_table), len(edge_table))
-    return edge_table, node_table
-
-
-def adjacency(u, v, weight, n_nodes) -> sp.csr_matrix:
-    return sp.csr_matrix((weight, (u, v)), shape=(n_nodes, n_nodes))
-
-
-def centre_source_nodes(nodes: pd.DataFrame, centres: gpd.GeoDataFrame, id_column: str, max_snap_m: float) -> pd.DataFrame:
-    """Table (node, centre_id) of the network nodes that stand for each urban centre."""
-    centres = centres[[id_column, "geometry"]].to_crs("EPSG:4326").reset_index(drop=True)
-    node_points = gpd.GeoDataFrame(
-        nodes[["node"]], geometry=gpd.points_from_xy(nodes.lon, nodes.lat), crs="EPSG:4326"
-    )
-    polygons = centres[centres.geometry.geom_type.isin(["Polygon", "MultiPolygon"])]
-    inside = gpd.sjoin(node_points, polygons, predicate="within", how="inner")[["node", id_column]]
-
-    # centres with no node inside (or point centres): the nearest node, if close enough
-    rest = centres[~centres[id_column].isin(inside[id_column])]
-    points = rest.geometry.representative_point()
-    index, distance = nearest_nodes(nodes.lon.values, nodes.lat.values, points.x.values, points.y.values)
-    near = pd.DataFrame({"node": nodes.node.values[index], id_column: rest[id_column].values})[distance <= max_snap_m]
-
-    sources = pd.concat([inside, near], ignore_index=True).drop_duplicates("node")
-    logging.info(
-        "%d of %d urban centres on the network (%d source nodes)",
-        sources[id_column].nunique(), len(centres), len(sources),
-    )
-    return sources.rename(columns={id_column: "centre_id"}).reset_index(drop=True)
-
-
-def route_to_nearest_centre(edge_table: pd.DataFrame, n_nodes: int, sources: pd.DataFrame) -> pd.DataFrame:
-    """Per node: network distance to, and identity of, its nearest urban centre.
-
-    Returns node, distance_m (inf if unreachable), centre_node (-1), centre_id (null).
-    """
-    graph = adjacency(edge_table.u, edge_table.v, np.maximum(edge_table.length_m, 1e-3), n_nodes)
-    distance, _, source = dijkstra(
-        graph, directed=False, indices=sources.node.to_numpy(), min_only=True, return_predecessors=True
-    )
-    centre_of = sources.set_index("node").centre_id
-    reachable = source >= 0
-    centre_id = np.full(n_nodes, None, dtype=object)
-    centre_id[reachable] = centre_of.reindex(source[reachable]).to_numpy()
-    return pd.DataFrame(
-        {"node": np.arange(n_nodes), "distance_m": distance, "centre_node": np.where(reachable, source, -1), "centre_id": centre_id}
-    )
-
-
-def read_population_cells(path, bounds_lonlat) -> pd.DataFrame:
-    """Populated cells (lon, lat, population) of a population raster within lon/lat bounds."""
     with rasterio.open(path) as src:
         to_raster = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
         bounds = to_raster.transform_bounds(*bounds_lonlat, densify_pts=101)
@@ -140,79 +78,406 @@ def read_population_cells(path, bounds_lonlat) -> pd.DataFrame:
     rows, cols = np.nonzero(data > 0)
     x, y = rasterio.transform.xy(transform, rows, cols)
     lon, lat = Transformer.from_crs(crs, "EPSG:4326", always_xy=True).transform(np.asarray(x), np.asarray(y))
-    logging.info("%d populated cells, population %.0f", len(rows), data[rows, cols].sum())
-    return pd.DataFrame({"lon": lon, "lat": lat, "population": data[rows, cols]})
+    cells = pd.DataFrame({"lon": lon, "lat": lat, "population": data[rows, cols]})
+
+    # admin by cell centre, rasterised onto the population grid
+    cells["adm1"] = None
+    cells["adm0"] = None
+    if admin is not None and len(admin) and len(cells):
+        admin = admin.to_crs(crs).reset_index(drop=True)
+        index = rasterio.features.rasterize(
+            ((geom, i + 1) for i, geom in enumerate(admin.geometry)),
+            out_shape=data.shape,
+            transform=transform,
+            fill=0,
+            dtype="int32",
+        )[rows, cols]
+        inside = index > 0
+        cells.loc[inside, "adm1"] = admin[adm1_column].astype(str).to_numpy()[index[inside] - 1]
+        cells.loc[inside, "adm0"] = admin[adm0_column].astype(str).to_numpy()[index[inside] - 1]
+    logging.info("%d populated cells, population %.0f", len(cells), cells.population.sum())
+    return cells
 
 
-def assign_admin(lon, lat, admin: gpd.GeoDataFrame | None, adm1_column, adm0_column) -> pd.DataFrame:
-    out = pd.DataFrame({"adm1": [None] * len(lon), "adm0": [None] * len(lon)}, dtype=object)
-    if admin is None or len(lon) == 0:
-        return out
-    points = gpd.GeoDataFrame(geometry=gpd.points_from_xy(lon, lat), crs="EPSG:4326")
-    admin = admin[[adm1_column, adm0_column, "geometry"]].to_crs("EPSG:4326")
-    joined = gpd.sjoin(points, admin, predicate="within", how="inner")
-    joined = joined[~joined.index.duplicated()]
-    out.loc[joined.index, "adm1"] = joined[adm1_column].astype(str).values
-    out.loc[joined.index, "adm0"] = joined[adm0_column].astype(str).values
-    return out
+# ---------------------------------------------------------------------------
+# Building the network with snkit
 
 
-def served_population(cells: pd.DataFrame, nodes: pd.DataFrame, routes: pd.DataFrame, max_snap_m: float):
-    """Snap cells to nodes and total the served population per (node, adm1, adm0).
+def blend_network(roads, cells, centres, centre_id_column, network_crs, max_snap_m, node_tolerance_m=1.0):
+    """Road network with population cells and urban centres blended into it.
 
-    Returns (cells with node, snap_distance_m and status, population table).
-    status is `served`, `too_far` (from the network) or `no_route` (to any centre).
+    roads: single-part lines with an `id` column (the asset id).
+    cells: lon, lat, population, adm1, adm0.
+    centres: urban centre polygons (or points) with `centre_id_column`.
+
+    Returns (nodes, edges) as DataFrames indexed 0..n-1:
+      nodes: node, lon, lat, kind, population, adm1, adm0, centre_id
+      edges: u, v, asset_id, length_m, plus a `geometry` column of lon/lat lines
     """
-    index, distance = nearest_nodes(nodes.lon.values, nodes.lat.values, cells.lon.values, cells.lat.values)
-    cells = cells.copy()
-    cells["node"] = nodes.node.values[index]
-    cells["snap_distance_m"] = distance
-    reachable = np.isfinite(routes.distance_m.to_numpy())[cells.node.to_numpy()]
-    cells["status"] = np.select([distance > max_snap_m, ~reachable], ["too_far", "no_route"], default="served")
-    served = cells[cells.status == "served"]
-    population = (
-        served.groupby(["node", "adm1", "adm0"], dropna=False)["population"].sum().reset_index()
+    import snkit
+    from snkit.arrays import lines_of, points_of
+
+    roads = roads[["id", "geometry"]].rename(columns={"id": "asset_id"}).to_crs(network_crs)
+    roads["asset_id"] = roads["asset_id"].astype(str)
+    network = snkit.from_edges(roads, tolerance=node_tolerance_m)
+    logging.info("snkit network from roads: %d nodes, %d edges", len(network.nodes), len(network.edges))
+
+    to_network = Transformer.from_crs("EPSG:4326", network_crs, always_xy=True)
+    px, py = to_network.transform(cells.lon.to_numpy(), cells.lat.to_numpy())
+    centres = centres[[centre_id_column, "geometry"]].to_crs(network_crs).reset_index(drop=True)
+    centre_points = centres.geometry.representative_point()
+    points = pd.DataFrame(
+        {
+            "kind": [KIND_POPULATION] * len(cells) + [KIND_CENTRE] * len(centres),
+            "population": np.r_[cells.population.to_numpy(dtype=float), np.zeros(len(centres))],
+            "adm1": np.r_[cells.adm1.to_numpy(dtype=object), np.full(len(centres), None, dtype=object)],
+            "adm0": np.r_[cells.adm0.to_numpy(dtype=object), np.full(len(centres), None, dtype=object)],
+            "centre_id": np.r_[np.full(len(cells), None, dtype=object), centres[centre_id_column].astype(str).to_numpy()],
+        }
     )
-    return cells, population
+    first_id = int(network.nodes["id"].max()) + 1 if len(network.nodes) else 0
+    points["id"] = np.arange(first_id, first_id + len(points), dtype=np.uint64)
+    points = gpd.GeoDataFrame(
+        points,
+        geometry=shapely.points(np.r_[px, centre_points.x.to_numpy()], np.r_[py, centre_points.y.to_numpy()]),
+        crs=network_crs,
+    )
+    road_nodes = network.nodes[["id", "geometry"]].assign(kind=KIND_ROAD)
+    road_nodes["id"] = road_nodes["id"].astype(np.uint64)
+    nodes = gpd.GeoDataFrame(pd.concat([road_nodes, points], ignore_index=True), geometry="geometry", crs=network_crs)
+    network = snkit.from_topology(nodes, network.edges[["id", "from_id", "to_id", "asset_id", "geometry"]])
+
+    # blend: project each point onto its nearest road, split there, add a connector
+    is_point = network.nodes["kind"].isin([KIND_POPULATION, KIND_CENTRE]).to_numpy()
+    blended = snkit.link_nodes_to_edges(
+        snkit.to_arrays(network), how="nearest", max_distance=max_snap_m, nodes=is_point, tolerance=node_tolerance_m
+    )
+    logging.info("Blended %d points: %d nodes, %d edges", is_point.sum(), len(blended.nodes), len(blended.edges))
+
+    # dense node index; coordinates back to lon/lat
+    node_ids = blended.nodes["id"].to_numpy(dtype=np.uint64)
+    order = np.argsort(node_ids)
+    to_lonlat = Transformer.from_crs(network_crs, "EPSG:4326", always_xy=True)
+    xy = points_of(blended.nodes).xy
+    lon, lat = to_lonlat.transform(xy[:, 0], xy[:, 1])
+    node_table = pd.DataFrame(
+        {
+            "node": np.arange(len(node_ids)),
+            "lon": lon,
+            "lat": lat,
+            "kind": blended.nodes["kind"].fillna(KIND_ROAD).to_numpy(dtype=object),
+            "population": blended.nodes["population"].fillna(0).to_numpy(dtype=float),
+            "adm1": blended.nodes["adm1"].to_numpy(dtype=object),
+            "adm0": blended.nodes["adm0"].to_numpy(dtype=object),
+            "centre_id": blended.nodes["centre_id"].to_numpy(dtype=object),
+        }
+    )
+
+    def dense(ids):
+        return order[np.searchsorted(node_ids, np.asarray(ids, dtype=np.uint64), sorter=order)]
+
+    lines = lines_of(blended.edges)
+    coords = np.column_stack(to_lonlat.transform(lines.coords[:, 0], lines.coords[:, 1]))
+    edge_table = pd.DataFrame(
+        {
+            "u": dense(blended.edges["from_id"]),
+            "v": dense(blended.edges["to_id"]),
+            "asset_id": blended.edges["asset_id"].to_numpy(dtype=object),
+            "length_m": geodesic_lengths(coords, lines.offsets),
+        }
+    )
+    edge_table["geometry"] = shapely.from_ragged_array(shapely.GeometryType.LINESTRING, coords, (lines.offsets,))
+    return node_table, edge_table
 
 
-class Network:
-    """Graph and served population, ready for per-event connectivity checks."""
+def geodesic_lengths(coords: np.ndarray, offsets: np.ndarray) -> np.ndarray:
+    """Length (m) of each lon/lat line held as coordinates and offsets."""
+    n_lines = len(offsets) - 1
+    if n_lines == 0:
+        return np.zeros(0)
+    # segments run from each vertex to the next, except across line boundaries
+    seg_start = np.arange(len(coords) - 1)
+    last_vertex = np.zeros(len(coords), dtype=bool)
+    last_vertex[offsets[1:] - 1] = True
+    seg_start = seg_start[~last_vertex[:-1]]
+    _, _, seg_len = Geod(ellps="WGS84").inv(
+        coords[seg_start, 0], coords[seg_start, 1], coords[seg_start + 1, 0], coords[seg_start + 1, 1]
+    )
+    line_of_segment = np.searchsorted(offsets, seg_start, side="right") - 1
+    return np.bincount(line_of_segment, weights=seg_len, minlength=n_lines)
 
-    def __init__(self, edge_table: pd.DataFrame, routes: pd.DataFrame, sources: pd.DataFrame, population: pd.DataFrame):
-        self.n_nodes = len(routes)
-        self.u = edge_table.u.to_numpy()
-        self.v = edge_table.v.to_numpy()
-        self.edge_asset = edge_table["id"].to_numpy()
-        self.source_nodes = sources.node.to_numpy()
-        self.population = population.reset_index(drop=True)
-        self.pop_node = self.population.node.to_numpy()
-        self.pop_centre_node = routes.centre_node.to_numpy()[self.pop_node]
 
-    def disconnected(self, failed_assets) -> tuple[np.ndarray, np.ndarray]:
-        """Boolean arrays over the population table rows: (disconnected, isolated)."""
-        keep = ~pd.Series(self.edge_asset).isin(failed_assets).to_numpy()
-        graph = sp.csr_matrix(
-            (np.ones(keep.sum(), dtype=np.int8), (self.u[keep], self.v[keep])), shape=(self.n_nodes, self.n_nodes)
+def centre_sources(nodes: pd.DataFrame, centres: gpd.GeoDataFrame, centre_id_column: str) -> pd.DataFrame:
+    """Table (node, centre_id) of the nodes standing for each urban centre.
+
+    Blended centre nodes, and any node inside a centre polygon.
+    """
+    blended = nodes[(nodes.kind == KIND_CENTRE)][["node", "centre_id"]]
+    centres = centres[[centre_id_column, "geometry"]].to_crs("EPSG:4326")
+    polygons = centres[centres.geometry.geom_type.isin(["Polygon", "MultiPolygon"])]
+    lon, lat = nodes.lon.to_numpy(), nodes.lat.to_numpy()
+    inside = []
+    for centre_id, geom in zip(polygons[centre_id_column].astype(str), polygons.geometry):
+        minx, miny, maxx, maxy = geom.bounds
+        candidates = np.flatnonzero((lon >= minx) & (lon <= maxx) & (lat >= miny) & (lat <= maxy))
+        hit = candidates[shapely.contains_xy(geom, lon[candidates], lat[candidates])]
+        inside.append(pd.DataFrame({"node": hit, "centre_id": centre_id}))
+    sources = pd.concat([blended, *inside], ignore_index=True).drop_duplicates("node")
+    return sources.reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Graph helpers
+
+
+def min_csr(u, v, w, n) -> sp.csr_matrix:
+    """Sparse matrix keeping the smallest weight of parallel (u, v) entries.
+
+    (scipy would otherwise add parallel entries together.)
+    """
+    u, v, w = np.asarray(u), np.asarray(v), np.asarray(w, dtype=float)
+    if len(u) == 0:
+        return sp.csr_matrix((n, n))
+    order = np.lexsort((w, v, u))
+    u, v, w = u[order], v[order], w[order]
+    first = np.r_[True, (u[1:] != u[:-1]) | (v[1:] != v[:-1])]
+    return sp.csr_matrix((w[first], (u[first], v[first])), shape=(n, n))
+
+
+def shortest_path_tree(edges: pd.DataFrame, n_nodes: int, sources: np.ndarray):
+    """Multi-source shortest paths: (distance, parent, nearest source)."""
+    u, v = edges.u.to_numpy(), edges.v.to_numpy()
+    w = np.maximum(edges.length_m.to_numpy(dtype=float), MIN_EDGE_M)
+    keep = u != v
+    graph = min_csr(np.r_[u[keep], v[keep]], np.r_[v[keep], u[keep]], np.r_[w[keep], w[keep]], n_nodes)
+    distance, parent, source = dijkstra(
+        graph, directed=True, indices=sources, min_only=True, return_predecessors=True
+    )
+    parent = np.where(parent < 0, -1, parent)
+    return distance, parent, source
+
+
+def preorder_intervals(parent: np.ndarray, reachable: np.ndarray):
+    """Preorder position and subtree size of each node in a forest.
+
+    `parent` is -1 at roots and unreachable nodes. Returns (order, tin, size):
+    the subtree of node x is `order[tin[x] : tin[x] + size[x]]`. tin is -1
+    for unreachable nodes.
+    """
+    n = len(parent)
+    children = np.flatnonzero(parent >= 0)
+    roots = np.flatnonzero(reachable & (parent < 0))
+    # a virtual root n above every tree root
+    tree = sp.csr_matrix(
+        (np.ones(len(children) + len(roots)), (np.r_[parent[children], np.full(len(roots), n)], np.r_[children, roots])),
+        shape=(n + 1, n + 1),
+    )
+    order = depth_first_order(tree, n, directed=True, return_predecessors=False)[1:]
+    tin = np.full(n, -1, dtype=np.int64)
+    tin[order] = np.arange(len(order))
+
+    # depth by pointer doubling, then subtree sizes level by level, deepest first
+    ancestor, depth = parent.copy(), (parent >= 0).astype(np.int64)
+    while (ancestor >= 0).any():
+        step = ancestor >= 0
+        depth[step] += depth[ancestor[step]]
+        ancestor[step] = ancestor[ancestor[step]]
+    size = np.where(reachable, 1, 0).astype(np.int64)
+    by_depth = children[np.argsort(-depth[children], kind="stable")]
+    levels = np.flatnonzero(np.r_[True, np.diff(depth[by_depth]) != 0, True])
+    for start, end in zip(levels[:-1], levels[1:]):
+        level = by_depth[start:end]
+        np.add.at(size, parent[level], size[level])
+    return order, tin, size
+
+
+# ---------------------------------------------------------------------------
+# Re-routing after failures
+
+
+class RouteNetwork:
+    """Network, baseline routes and population, ready for failure analysis."""
+
+    def __init__(self, nodes: pd.DataFrame, edges: pd.DataFrame):
+        n = len(nodes)
+        self.n_nodes = n
+        self.d0 = nodes.distance_m.to_numpy(dtype=float)
+        self.parent = nodes.parent.to_numpy(dtype=np.int64)
+        self.tin = nodes.tin.to_numpy(dtype=np.int64)
+        in_tree = self.tin >= 0
+        self.order = np.empty(in_tree.sum(), dtype=np.int64)
+        self.order[self.tin[in_tree]] = np.flatnonzero(in_tree)
+        self.size = nodes.subtree_size.to_numpy(dtype=np.int64)
+        self.population = np.where(np.isfinite(self.d0), nodes.population.to_numpy(dtype=float), 0.0)
+        self.pop_prefix = np.r_[0.0, np.cumsum(self.population[self.order])]
+        self.adm1 = nodes.adm1.to_numpy(dtype=object)
+        self.adm0 = nodes.adm0.to_numpy(dtype=object)
+
+        u, v = edges.u.to_numpy(), edges.v.to_numpy()
+        self.u, self.v = u, v
+        self.w = np.maximum(edges.length_m.to_numpy(dtype=float), MIN_EDGE_M)
+        # node -> incident (neighbour, weight, edge) in CSR form, both directions
+        ends = np.r_[u, v]
+        others = np.r_[v, u]
+        edge_index = np.r_[np.arange(len(u)), np.arange(len(u))]
+        order = np.argsort(ends, kind="stable")
+        self.adj_ptr = np.r_[0, np.cumsum(np.bincount(ends, minlength=n))]
+        self.adj_node = others[order]
+        self.adj_w = np.r_[self.w, self.w][order]
+        self.adj_edge = edge_index[order]
+
+        # asset id -> edges (connectors have no asset and never fail)
+        assets = edges.asset_id
+        has_asset = assets.notna().to_numpy()
+        codes, self.asset_ids = pd.factorize(assets[has_asset].astype(str))
+        edge_of = np.flatnonzero(has_asset)
+        by_asset = np.argsort(codes, kind="stable")
+        self.asset_edges = edge_of[by_asset]
+        self.asset_ptr = np.r_[0, np.cumsum(np.bincount(codes, minlength=len(self.asset_ids)))]
+        self.asset_index = pd.Index(self.asset_ids)
+        self._failed = np.zeros(len(u), dtype=bool)
+
+    @classmethod
+    def from_baseline(cls, baseline_dir) -> "RouteNetwork":
+        """Read the tables written by `workflow/scripts/disconnection_baseline.py`."""
+        nodes = pd.read_parquet(os.path.join(baseline_dir, "nodes.parquet"))
+        edges = pd.read_parquet(
+            os.path.join(baseline_dir, "edges.parquet"), columns=["u", "v", "asset_id", "length_m"]
         )
-        _, component = connected_components(graph, directed=False)
-        has_centre = np.zeros(component.max() + 1, dtype=bool)
-        has_centre[component[self.source_nodes]] = True
-        disconnected = component[self.pop_node] != component[self.pop_centre_node]
-        isolated = ~has_centre[component[self.pop_node]]
-        return disconnected, isolated
+        return cls(nodes, edges)
 
-    def event_table(self, failed_assets) -> pd.DataFrame:
-        """Population disconnected and isolated by (adm1, adm0), for regions affected."""
-        disconnected, isolated = self.disconnected(failed_assets)
-        if not disconnected.any():
-            return pd.DataFrame(columns=["adm1", "adm0", "population_disconnected", "population_isolated"])
-        rows = self.population[disconnected].assign(
-            population_disconnected=lambda d: d.population,
-            population_isolated=lambda d: d.population * isolated[disconnected],
+    def asset_edge_slice(self, i: int) -> np.ndarray:
+        """Edges of the i-th asset in `asset_ids`."""
+        return self.asset_edges[self.asset_ptr[i] : self.asset_ptr[i + 1]]
+
+    def edges_of_assets(self, asset_ids) -> np.ndarray:
+        idx = self.asset_index.get_indexer(pd.Index(np.asarray(asset_ids, dtype=str)))
+        idx = idx[idx >= 0]
+        if len(idx) == 0:
+            return np.zeros(0, dtype=np.int64)
+        return np.concatenate([self.asset_edge_slice(i) for i in idx])
+
+    def affected_intervals(self, failed_edges: np.ndarray):
+        """Merged preorder intervals of the subtrees cut off by removing edges."""
+        u, v = self.u[failed_edges], self.v[failed_edges]
+        child = np.r_[v[self.parent[v] == u], u[self.parent[u] == v]]
+        child = child[self.tin[child] >= 0]
+        if len(child) == 0:
+            return np.zeros((0, 2), dtype=np.int64)
+        start = self.tin[child]
+        end = start + self.size[child]
+        order = np.argsort(start)
+        start, end = start[order], end[order]
+        # tree intervals nest or are disjoint: keep those not inside an earlier one
+        outer = end > np.r_[-1, np.maximum.accumulate(end)[:-1]]
+        return np.column_stack([start[outer], end[outer]])
+
+    def population_at_risk(self, intervals) -> float:
+        """Baseline population whose route to a centre uses a removed edge."""
+        return float((self.pop_prefix[intervals[:, 1]] - self.pop_prefix[intervals[:, 0]]).sum())
+
+    def reroute(self, failed_edges: np.ndarray, intervals=None):
+        """Nodes whose route used a removed edge, and their new distances (inf if none).
+
+        Exact: nodes outside the cut-off subtrees keep their baseline routes,
+        so a cut-off node's best new route runs through cut-off nodes until it
+        first reaches a node outside, and continues on that node's baseline
+        route. A search from a virtual source joined to each cut-off node at
+        `d0(outside neighbour) + edge length` therefore finds every new
+        distance.
+        """
+        if intervals is None:
+            intervals = self.affected_intervals(failed_edges)
+        if len(intervals) == 0:
+            return np.zeros(0, dtype=np.int64), np.zeros(0)
+        nodes = np.concatenate([self.order[s:e] for s, e in intervals])
+        k = len(nodes)
+        local = np.full(self.n_nodes, -1, dtype=np.int64)
+        local[nodes] = np.arange(k)
+
+        self._failed[failed_edges] = True
+        counts = self.adj_ptr[nodes + 1] - self.adj_ptr[nodes]
+        entry = np.repeat(self.adj_ptr[nodes] - np.r_[0, np.cumsum(counts)[:-1]], counts) + np.arange(counts.sum())
+        source = np.repeat(np.arange(k), counts)
+        neighbour, weight = self.adj_node[entry], self.adj_w[entry]
+        ok = ~self._failed[self.adj_edge[entry]]
+        self._failed[failed_edges] = False
+
+        source, neighbour, weight = source[ok], neighbour[ok], weight[ok]
+        inside = local[neighbour] >= 0
+        outside_d = self.d0[neighbour[~inside]] + weight[~inside]
+        finite = np.isfinite(outside_d)
+        graph = min_csr(
+            np.r_[source[inside], np.full(finite.sum(), k)],
+            np.r_[local[neighbour[inside]], source[~inside][finite]],
+            np.r_[weight[inside], outside_d[finite]],
+            k + 1,
         )
-        return (
-            rows.groupby(["adm1", "adm0"], dropna=False)[["population_disconnected", "population_isolated"]]
-            .sum()
-            .reset_index()
+        d1 = dijkstra(graph, directed=True, indices=k)[:k]
+        return nodes, d1
+
+    def impact(self, failed_edges: np.ndarray, by_admin: bool = True) -> pd.DataFrame:
+        """Population disconnected and detoured after removing edges.
+
+        Rows by (adm1, adm0) if `by_admin`, else one total row; empty if none.
+        """
+        columns = ["population_disconnected", "population_detoured", "detour_person_km"]
+        keys = ["adm1", "adm0"] if by_admin else []
+        empty = pd.DataFrame(columns=keys + columns)
+        intervals = self.affected_intervals(failed_edges)
+        if len(intervals) == 0 or self.population_at_risk(intervals) == 0:
+            return empty
+        nodes, d1 = self.reroute(failed_edges, intervals)
+        pop = self.population[nodes]
+        keep = pop > 0
+        nodes, d1, pop = nodes[keep], d1[keep], pop[keep]
+        extra = d1 - self.d0[nodes]
+        disconnected = ~np.isfinite(d1)
+        detoured = ~disconnected & (extra > DETOUR_EPSILON_M)
+        if not (disconnected.any() or detoured.any()):
+            return empty
+        rows = pd.DataFrame(
+            {
+                "population_disconnected": np.where(disconnected, pop, 0.0),
+                "population_detoured": np.where(detoured, pop, 0.0),
+                "detour_person_km": np.where(detoured, pop * extra / 1000, 0.0),
+            }
         )
+        rows = rows[disconnected | detoured]
+        if not by_admin:
+            return rows.sum().to_frame().T
+        rows["adm1"] = self.adm1[nodes][disconnected | detoured]
+        rows["adm0"] = self.adm0[nodes][disconnected | detoured]
+        return rows.groupby(keys, dropna=False)[columns].sum().reset_index()
+
+
+def build_baseline(nodes: pd.DataFrame, edges: pd.DataFrame, sources: pd.DataFrame) -> pd.DataFrame:
+    """Add baseline routing columns to the node table.
+
+    distance_m, parent, nearest_centre_id, is_source, tin, subtree_size, and
+    status for population nodes: served, too_far (not blended: no road within
+    the snap distance) or no_route (on a part of the network with no centre).
+    """
+    n = len(nodes)
+    distance, parent, source = shortest_path_tree(edges, n, sources.node.to_numpy())
+    reachable = np.isfinite(distance)
+    order, tin, size = preorder_intervals(parent, reachable)
+    centre_of = sources.set_index("node").centre_id
+    nearest = np.full(n, None, dtype=object)
+    nearest[reachable] = centre_of.reindex(source[reachable]).to_numpy()
+
+    degree = np.bincount(np.r_[edges.u.to_numpy(), edges.v.to_numpy()], minlength=n)
+    is_pop = (nodes.kind == KIND_POPULATION).to_numpy()
+    status = np.full(n, None, dtype=object)
+    status[is_pop] = np.select(
+        [degree[is_pop] == 0, ~reachable[is_pop]], ["too_far", "no_route"], default="served"
+    )
+    out = nodes.copy()
+    out["distance_m"] = distance
+    out["parent"] = parent
+    out["nearest_centre_id"] = nearest
+    out["is_source"] = np.isin(np.arange(n), sources.node.to_numpy())
+    out["tin"] = tin
+    out["subtree_size"] = size
+    out["status"] = status
+    return out

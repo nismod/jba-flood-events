@@ -84,10 +84,16 @@ def make_dataset(root):
         )
 
     os.makedirs(os.path.join(data, "infrastructure"))
-    # road crosses from HAZ A into HAZ B along y = 0.705 (row 29)
+    # r1 crosses from HAZ A into HAZ B along y = 0.705 (row 29). r2 crosses r1
+    # without a junction. r3 is a bypass joining both ends of r1 by way of
+    # y = 1.05, off the hazard grid, so it never floods.
     gpd.GeoDataFrame(
-        {"id": ["r1", "r2"], "cost_type": ["roads_paved", None]},
-        geometry=[LineString([(10.005, 0.705), (10.995, 0.705)]), LineString([(10.455, 0.9), (10.455, 0.5)])],
+        {"id": ["r1", "r2", "r3"], "cost_type": ["roads_paved", None, "roads_paved"]},
+        geometry=[
+            LineString([(10.005, 0.705), (10.995, 0.705)]),
+            LineString([(10.455, 0.9), (10.455, 0.5)]),
+            LineString([(10.005, 0.705), (10.005, 1.05), (10.995, 1.05), (10.995, 0.705)]),
+        ],
         crs="EPSG:4326",
     ).to_parquet(os.path.join(data, "infrastructure", "africa_road_edges_network.parquet"))
     gpd.GeoDataFrame(
@@ -129,14 +135,15 @@ def make_dataset(root):
         crs="EPSG:4326",
     ).to_file(os.path.join(data, "admin", "adm1.gpkg"))
 
-    # population on a 0.05 degree grid; road r1 is the only link from the west to the urban centre
+    # population on a 0.05 degree grid
     os.makedirs(os.path.join(data, "population"))
     pop = np.zeros((12, 20), dtype=np.float32)
 
     def set_pop(lon, lat, value):
         pop[int((1.0 - lat) / 0.05), int((lon - 10.0) / 0.05)] = value
 
-    set_pop(10.025, 0.725, 100)  # near the west end of r1, in X1: served, cut off if r1 floods
+    set_pop(10.075, 0.725, 100)  # on r1, in X1: disconnected if r1 floods
+    set_pop(10.025, 0.875, 40)  # on the bypass r3, in X1: routes along r1, detoured if r1 floods
     set_pop(10.975, 0.725, 50)  # in the urban centre, in Y1: always connected
     set_pop(10.475, 0.875, 9)  # snaps to r2, which has no route to a centre
     set_pop(10.525, 0.475, 7)  # just over 5 km from the nearest network node
@@ -146,14 +153,14 @@ def make_dataset(root):
     ) as dst:
         dst.write(pop, 1)
     gpd.GeoDataFrame(
-        {"ID_UC_G0": [1]}, geometry=[box(10.98, 0.69, 11.0, 0.72)], crs="EPSG:4326"
+        {"ID_UC_G0": [1]}, geometry=[box(10.96, 0.69, 11.0, 0.74)], crs="EPSG:4326"
     ).to_file(os.path.join(data, "population", "urban_centres.gpkg"))
 
     # method parameters that differ from workflow/config.yaml for the tests
     with open(os.path.join(root, "test_config.yaml"), "w") as fh:
         fh.write(
             "risk:\n  years: 4\n  exceedance_probabilities: [0.5, 0.2]\n"
-            "disconnection:\n  chunks: 2\n  population_path: population/ghs_pop.tif\n"
+            "disconnection:\n  chunks: 2\n  criticality_chunks: 2\n  population_path: population/ghs_pop.tif\n"
             "  centres_path: population/urban_centres.gpkg\n"
         )
 
